@@ -1,0 +1,21 @@
+{
+  "include": [
+    "app/core/security.py",
+    "app/core/permissions.py",
+    "app/services/importer/file_validator.py",
+    "app/services/importer/text_chunker.py",
+    "app/services/importer/parsers/base.py",
+    "app/services/importer/parsers/txt_parser.py",
+    "app/services/importer/parsers/markdown_parser.py",
+    "app/services/importer/parsers/docx_parser.py",
+    "tests/fakes"
+  ],
+  "exclude": ["**/__pycache__"],
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "none",
+  "reportMissingTypeStubs": "none"
+}
+

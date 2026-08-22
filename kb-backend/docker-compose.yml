@@ -1,0 +1,255 @@
+version: "3.8"
+
+services:
+  # ==================== PostgreSQL 15 ====================
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: kb-postgres
+    environment:
+      POSTGRES_USER: kb_user
+      POSTGRES_PASSWORD: kb_pass
+      POSTGRES_DB: knowledge_base
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kb_user -d knowledge_base"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ==================== MinIO (应用对象存储) ====================
+  minio:
+    image: minio/minio:latest
+    container_name: kb-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ==================== Redis 7 ====================
+  redis:
+    image: redis:7-alpine
+    container_name: kb-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ==================== Milvus Standalone ====================
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.5
+    container_name: kb-etcd
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - etcd_data:/etcd
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  milvus-minio:
+    image: minio/minio:latest
+    container_name: kb-milvus-minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - milvus_minio_data:/data
+    command: minio server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  milvus:
+    image: milvusdb/milvus:v2.4.0
+    container_name: kb-milvus
+    depends_on:
+      etcd:
+        condition: service_healthy
+      milvus-minio:
+        condition: service_healthy
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: milvus-minio:9000
+      MINIO_ACCESS_KEY_ID: minioadmin
+      MINIO_SECRET_ACCESS_KEY: minioadmin
+    volumes:
+      - milvus_data:/var/lib/milvus
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    command: milvus run standalone
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+# ==================== App: FastAPI ====================
+  kb-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kb-app
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://kb_user:kb_pass@postgres:5432/knowledge_base"
+      MILVUS_HOST: milvus
+      MILVUS_PORT: "19530"
+      MINIO_ENDPOINT: "minio:9000"
+      REDIS_URL: "redis://redis:6379/0"
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://api.siliconflow.cn/v1}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-m3}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-1024}
+      EMBEDDING_LOCAL: ${EMBEDDING_LOCAL:-false}
+      EMBEDDING_MODEL_DIR: ${EMBEDDING_MODEL_DIR:-/app/models}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+      HF_HUB_DOWNLOAD_TIMEOUT: "10"
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
+      RERANK_API_KEY: ${RERANK_API_KEY}
+      RERANK_BASE_URL: ${RERANK_BASE_URL:-https://api.siliconflow.cn/v1}
+      RERANK_MODEL: ${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-production}
+      USE_UNLIMITED_OCR: ${USE_UNLIMITED_OCR:-false}
+      UNLIMITED_OCR_URL: ${UNLIMITED_OCR_URL:-}
+    volumes:
+      - kb_uploads:/tmp/kb_uploads
+      - ./app/static/dist:/app/app/static/dist
+      - models:/app/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ==================== App: Celery Worker ====================
+  kb-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kb-worker
+    command: celery -A app.tasks worker --loglevel=info --concurrency=1 --max-memory-per-child=2000000
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://kb_user:kb_pass@postgres:5432/knowledge_base"
+      MILVUS_HOST: milvus
+      MILVUS_PORT: "19530"
+      MINIO_ENDPOINT: "minio:9000"
+      REDIS_URL: "redis://redis:6379/0"
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://api.siliconflow.cn/v1}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-m3}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-1024}
+      EMBEDDING_LOCAL: ${EMBEDDING_LOCAL:-false}
+      EMBEDDING_MODEL_DIR: ${EMBEDDING_MODEL_DIR:-/app/models}
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
+      RERANK_API_KEY: ${RERANK_API_KEY}
+      RERANK_BASE_URL: ${RERANK_BASE_URL:-https://api.siliconflow.cn/v1}
+      RERANK_MODEL: ${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-production}
+      USE_UNLIMITED_OCR: ${USE_UNLIMITED_OCR:-false}
+      UNLIMITED_OCR_URL: ${UNLIMITED_OCR_URL:-}
+    volumes:
+      - kb_uploads:/tmp/kb_uploads
+      - ./app/services/vectorizer.py:/app/app/services/vectorizer.py
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks inspect ping -d celery@$$(hostname) 2>/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  # ==================== App: Celery Beat ====================
+  kb-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kb-beat
+    command: celery -A app.tasks.faq_mining_task beat --loglevel=info
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://kb_user:kb_pass@postgres:5432/knowledge_base"
+      REDIS_URL: "redis://redis:6379/0"
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://api.siliconflow.cn/v1}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-m3}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-1024}
+      EMBEDDING_LOCAL: ${EMBEDDING_LOCAL:-true}
+      EMBEDDING_MODEL_DIR: ${EMBEDDING_MODEL_DIR:-/app/models}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
+      FAQ_MINING_DAYS: ${FAQ_MINING_DAYS:-30}
+      FAQ_MINING_THRESHOLD: ${FAQ_MINING_THRESHOLD:-3}
+      USE_UNLIMITED_OCR: ${USE_UNLIMITED_OCR:-false}
+      UNLIMITED_OCR_URL: ${UNLIMITED_OCR_URL:-}
+    volumes:
+      - models:/app/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f celery > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  minio_data:
+  redis_data:
+  etcd_data:
+  milvus_minio_data:
+  milvus_data:
+  kb_uploads:
+  models:

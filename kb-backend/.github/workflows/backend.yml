@@ -1,0 +1,45 @@
+name: Backend quality
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      JWT_SECRET_KEY: ci-only-secret-key-with-at-least-32-bytes
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Ruff format
+        run: ruff format --check tests
+
+      - name: Ruff lint
+        run: ruff check app tests
+
+      - name: Pyright
+        run: pyright
+
+      - name: Unit tests
+        run: pytest tests/unit -q

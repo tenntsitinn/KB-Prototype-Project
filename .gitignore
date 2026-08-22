@@ -1,0 +1,51 @@
+# 所有 Markdown 文档（README 除外）
+*.md
+!README.md
+
+# IDE / 编辑器配置
+.idea/
+.vscode/
+*.swp
+
+# Trae HTML 分享缓存
+.trae-html-share-packages/
+
+# 测试与临时数据
+import_test_doc/
+test-deploy-plan/
+tmp/
+*.tmp
+*.log
+
+# 压缩包与构建产物
+*.zip
+*.tar.gz
+*.tar
+*.7z
+*.rar
+dist/
+build/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+
+# 环境变量（含 API Key，禁止提交）
+.env
+.env.local
+.env.*.local
+
+# 操作系统
+.DS_Store
+Thumbs.db
+Desktop.ini
