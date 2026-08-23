@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import api from '../../services/api'
-import type { Phase, Tag, QuizQuestion, QuizAnswerResult } from './model'
-import TagSelect from '../../components/TagSelect'
+import type { Phase, Tag, QuizQuestion, QuizAnswerResult, DocumentItem } from './model'
+import DocumentTreeSelect from '../../components/DocumentTreeSelect'
 
 const containerStyle: React.CSSProperties = {
   flex: 1, overflow: 'auto', padding: 24,
@@ -24,7 +24,8 @@ const scoreColor = (score: number) =>
 export default function Quiz() {
   const [phase, setPhase] = useState<Phase>('select')
   const [tags, setTags] = useState<Tag[]>([])
-  const [category, setCategory] = useState('')
+  const [documents, setDocuments] = useState<DocumentItem[]>([])
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
   const [loading, setLoading] = useState(false)
   const [current, setCurrent] = useState<QuizQuestion | null>(null)
@@ -40,12 +41,21 @@ export default function Quiz() {
     }).catch(() => {})
   }, [])
 
+  useEffect(() => {
+    if (documents.length > 0) return
+    api.get('/api/knowledge/units', { params: { status: 'published', limit: 500 } }).then((res) => {
+      const items = res.data?.items || []
+      setDocuments(items.map((u: any) => ({ id: u.id, title: u.title, category: u.category })))
+    }).catch(() => {})
+  }, [documents.length])
+
   const startQuiz = useCallback(() => {
+    if (selectedIds.size === 0) return
     setAskedIds([])
     setHistory([])
     setPhase('question')
     fetchNext([])
-  }, [category])
+  }, [selectedIds])
 
   const openSource = useCallback(async (unitId: string) => {
     const win = window.open('about:blank', '_blank')
@@ -67,7 +77,11 @@ export default function Quiz() {
     setResult(null)
     setAnswerText('')
     try {
-      const res = await api.post('/api/quiz/next', { category, asked_question_ids: asked })
+      const payload: Record<string, any> = {
+        asked_question_ids: asked,
+        source_unit_ids: Array.from(selectedIds),
+      }
+      const res = await api.post('/api/quiz/next', payload)
       setCurrent(res.data)
     } catch (e: any) {
       setCurrent(null)
@@ -75,7 +89,7 @@ export default function Quiz() {
     } finally {
       setLoading(false)
     }
-  }, [category])
+  }, [selectedIds])
 
   const submitAnswer = useCallback(async () => {
     if (!current) return
@@ -121,24 +135,28 @@ export default function Quiz() {
         <div style={cardStyle}>
           <h2 style={{ fontSize: 20, fontWeight: 600, margin: '0 0 8px', color: 'var(--text)' }}>智能出题</h2>
           <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: '0 0 24px', lineHeight: 1.6 }}>
-            选择知识范围，AI 基于其中的内容生成开放式问题。一题一卡，作答后即时评分并给出参考答案。
+            选择知识范围，AI 基于其中的内容生成开放式问题。勾选标签可全选其下所有文档，也可展开单独勾选文档。一题一卡，作答后即时评分并给出参考答案。
           </p>
+
           <div style={{ marginBottom: 24 }}>
-            <div style={labelStyle}>出题范围（支持搜索标签）</div>
-            <TagSelect
-              tags={tags}
-              value={category}
-              onChange={setCategory}
-              emptyLabel="全部可见文档"
-              placeholder="搜索或选择范围…"
+            <div style={{ ...labelStyle, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>出题范围（按标签分组，勾选标签 = 全选其下文档）</span>
+              <span style={{ fontSize: 11 }}>{tags.length} 个标签 · {documents.length} 篇文档</span>
+            </div>
+            <DocumentTreeSelect
+              documents={documents}
+              selectedIds={selectedIds}
+              onChange={setSelectedIds}
             />
           </div>
+
           <button
             className="btn btn-primary"
             style={{ width: '100%', justifyContent: 'center', padding: '12px 0', fontSize: 15 }}
+            disabled={selectedIds.size === 0}
             onClick={startQuiz}
           >
-            开始答题
+            {selectedIds.size > 0 ? `开始答题（已选 ${selectedIds.size} 篇）` : '请先选择出题范围'}
           </button>
           {history.length > 0 && (
             <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border-light)' }}>
@@ -164,7 +182,9 @@ export default function Quiz() {
         width: '100%', maxWidth: 720, display: 'flex', justifyContent: 'space-between',
         alignItems: 'center', marginBottom: 12, fontSize: 13, color: 'var(--text-muted)',
       }}>
-        <span>已答 {history.length} 题{category ? ` · ${category}` : ''}</span>
+        <span>
+          已答 {history.length} 题 · 已选 {selectedIds.size} 篇文档
+        </span>
         <button className="btn btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }} onClick={exitQuiz}>
           退出本轮
         </button>

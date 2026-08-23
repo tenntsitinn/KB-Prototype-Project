@@ -15,6 +15,7 @@ async def do_recall(state: RAGState) -> dict:
     user = state["user"]
     query = state["rewritten_query"]
     top_k = state.get("top_k", settings.RAG_TOP_K)
+    user_api_key = user.llm_api_key or "" if not user.is_superuser else ""
 
     config = RecallConfig(
         target_k=top_k,
@@ -35,7 +36,7 @@ async def do_recall(state: RAGState) -> dict:
 
         new_embedding, new_hyde, new_keyword = await asyncio.gather(
             _embedding_search(query, limit, threshold),
-            _hyde_search(query, limit, threshold),
+            _hyde_search(query, limit, threshold, user_api_key),
             _keyword_search(db, query, limit),
         )
 

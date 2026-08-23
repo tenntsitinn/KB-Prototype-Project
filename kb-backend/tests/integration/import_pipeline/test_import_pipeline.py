@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 import pytest
 
 from app.models.knowledge_unit import KnowledgeUnit
@@ -13,7 +15,9 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.mark.asyncio
-async def test_document_validation_parse_chunk_and_fake_vectorize(tmp_path, monkeypatch, fake_embedding, fake_milvus):
+async def test_document_validation_parse_chunk_and_fake_vectorize(
+    tmp_path, monkeypatch, fake_embedding, fake_milvus, db_session
+):
     document = tmp_path / "policy.md"
     document.write_text(
         "# Annual Leave\n\nEmployees receive annual leave based on service years.\n\n"
@@ -27,6 +31,7 @@ async def test_document_validation_parse_chunk_and_fake_vectorize(tmp_path, monk
         "use_unlimited_ocr": False,
         "unit_id": "unit-import",
         "unit_code": "KB-IMPORT",
+        "minio_paths": [],
     }
 
     state.update(node_validate(state))
@@ -59,6 +64,12 @@ async def test_document_validation_parse_chunk_and_fake_vectorize(tmp_path, monk
         )
 
     monkeypatch.setattr("app.nodes.importer.vectorize.vectorize_and_insert", fake_vectorize_and_insert)
+
+    @asynccontextmanager
+    async def fake_session_factory():
+        yield db_session
+
+    monkeypatch.setattr("app.nodes.importer.vectorize.AsyncSessionLocal", fake_session_factory)
     state.update(await node_vectorize(state))
 
     assert state["stage"] == "vectorized"

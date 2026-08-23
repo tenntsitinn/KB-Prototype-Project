@@ -48,7 +48,7 @@ export interface ImportTask {
 }
 
 // ===== Constants =====
-export const PAGE_SIZE = 20
+export const PAGE_SIZE = 5
 
 export const STATUS_MAP: Record<string, string> = { published: '已发布', draft: '草稿', deleted: '已删除' }
 export const PERM_TYPE_MAP: Record<string, string> = { global: '全局可见', department: '指定部门', role: '指定角色', user: '指定用户' }

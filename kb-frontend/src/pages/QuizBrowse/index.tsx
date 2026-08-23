@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import api from '../../services/api'
+import { useAuthStore } from '../../stores/authStore'
 import { STATUS_MAP, SOURCE_MAP, type BankQuestion } from '../QuizBank/model'
 
 const thStyle: React.CSSProperties = { padding: '10px 14px', textAlign: 'left', fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }
@@ -25,6 +26,9 @@ function fmtDate(v: string | null): string {
 }
 
 export default function QuizBrowse() {
+  const { hasPermission } = useAuthStore()
+  const canManage = hasPermission('quiz:manage')
+
   const [questions, setQuestions] = useState<BankQuestion[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -36,6 +40,8 @@ export default function QuizBrowse() {
   const [sourceFilter, setSourceFilter] = useState('')
   const [page, setPage] = useState(0)
   const [detail, setDetail] = useState<BankQuestion | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [batchWorking, setBatchWorking] = useState(false)
   const [toast, setToast] = useState({ msg: '', type: '' })
 
   const PAGE_SIZE = 20
@@ -67,7 +73,8 @@ export default function QuizBrowse() {
       setTags(Array.isArray(res.data) ? res.data : res.data?.data || [])
     }).catch(() => {})
   }, [])
-  useEffect(() => { setPage(0) }, [statusFilter, categoryFilter, keyword, sourceFilter])
+  useEffect(() => { setPage(0); setSelected(new Set()) }, [statusFilter, categoryFilter, keyword, sourceFilter])
+  useEffect(() => { setSelected(new Set()) }, [page])
 
   const openSource = useCallback(async (unitId: string) => {
     const win = window.open('about:blank', '_blank')
@@ -83,7 +90,46 @@ export default function QuizBrowse() {
     }
   }, [])
 
+  const deleteQuestion = useCallback(async (id: string) => {
+    if (!confirm('确定删除该题目？此操作不可恢复。')) return
+    try {
+      await api.delete(`/api/quiz/bank/${id}`)
+      showToast('已删除', 'success')
+      setDetail(null)
+      setSelected((prev) => { const n = new Set(prev); n.delete(id); return n })
+      fetchQuestions()
+    } catch { showToast('删除失败', 'error') }
+  }, [fetchQuestions])
+
+  const toggleAll = useCallback((checked: boolean) => {
+    setSelected(checked ? new Set(questions.map((q) => q.id)) : new Set())
+  }, [questions])
+
+  const toggleOne = useCallback((id: string, checked: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (checked) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }, [])
+
+  const batchDelete = useCallback(async () => {
+    if (selected.size === 0 || batchWorking) return
+    if (!confirm(`确定批量删除选中的 ${selected.size} 道题？此操作不可恢复。`)) return
+    setBatchWorking(true)
+    try {
+      const res = await api.delete('/api/quiz/bank', { data: { question_ids: Array.from(selected) } })
+      const ok = res.data?.deleted_count ?? selected.size
+      showToast(`已删除 ${ok} 道题`, 'success')
+      setSelected(new Set())
+      fetchQuestions()
+    } catch { showToast('批量删除失败', 'error') }
+    finally { setBatchWorking(false) }
+  }, [selected, batchWorking, fetchQuestions])
+
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const allChecked = questions.length > 0 && questions.every((q) => selected.has(q.id))
 
   const metaItem = (k: string, v: React.ReactNode, color?: string) => (
     <div>
@@ -128,10 +174,29 @@ export default function QuizBrowse() {
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>共 {total} 题</span>
       </div>
 
+      {/* Batch bar */}
+      {canManage && selected.size > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 12, padding: '8px 14px', marginBottom: 12,
+          background: 'var(--primary-light)', borderRadius: 'var(--radius-lg)',
+          border: '1px solid var(--primary)',
+        }}>
+          <span style={{ fontSize: 13, color: 'var(--text)' }}>已选 {selected.size} 道题</span>
+          <div style={{ flex: 1 }} />
+          <button className="btn btn-danger" style={{ fontSize: 12, padding: '4px 12px' }} disabled={batchWorking} onClick={batchDelete}>
+            {batchWorking ? '处理中…' : '批量删除选中'}
+          </button>
+          <button className="btn btn-ghost" style={{ fontSize: 12, padding: '4px 12px' }} onClick={() => setSelected(new Set())}>取消选择</button>
+        </div>
+      )}
+
       {/* Table */}
       <div style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead><tr style={{ background: 'var(--bg-card)' }}>
+            {canManage && <th style={{ ...thStyle, width: 40, textAlign: 'center' }}>
+              <input type="checkbox" checked={allChecked} onChange={(e) => toggleAll(e.target.checked)} />
+            </th>}
             <th style={{ ...thStyle, width: 48, textAlign: 'center' }}>序号</th>
             <th style={thStyle}>题目</th>
             <th style={{ ...thStyle, width: 90 }}>分类</th>
@@ -143,11 +208,14 @@ export default function QuizBrowse() {
           </tr></thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={8} style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>加载中...</td></tr>
+              <tr><td colSpan={canManage ? 9 : 8} style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>加载中...</td></tr>
             ) : questions.length === 0 ? (
-              <tr><td colSpan={8} style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>暂无符合条件的题目</td></tr>
+              <tr><td colSpan={canManage ? 9 : 8} style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>暂无符合条件的题目</td></tr>
             ) : questions.map((q, idx) => (
-              <tr key={q.id}>
+              <tr key={q.id} style={{ background: selected.has(q.id) ? 'var(--primary-light)' : 'transparent' }}>
+                {canManage && <td style={{ ...tdStyle, textAlign: 'center' }}>
+                  <input type="checkbox" checked={selected.has(q.id)} onChange={(e) => toggleOne(q.id, e.target.checked)} />
+                </td>}
                 <td style={{ ...tdStyle, textAlign: 'center' }}>
                   <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{page * PAGE_SIZE + idx + 1}</span>
                 </td>
@@ -163,6 +231,7 @@ export default function QuizBrowse() {
                 <td style={tdStyle}><span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{fmtDate(q.created_at)}</span></td>
                 <td style={{ ...tdStyle, textAlign: 'center' }}>
                   <button className="btn btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }} onClick={() => setDetail(q)}>查看</button>
+                  {canManage && <button className="btn btn-danger" style={{ fontSize: 12, padding: '4px 10px', marginLeft: 4 }} onClick={() => deleteQuestion(q.id)}>删除</button>}
                 </td>
               </tr>
             ))}
@@ -217,7 +286,8 @@ export default function QuizBrowse() {
                 ? <a href="#" onClick={(e) => { e.preventDefault(); openSource(detail.source_unit_id) }} style={{ color: 'var(--primary)', cursor: 'pointer' }}>查看原文 →</a>
                 : '-')}
             </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
+              {canManage && <button className="btn btn-danger" onClick={() => deleteQuestion(detail.id)}>删除</button>}
               <button className="btn btn-primary" onClick={() => setDetail(null)}>关闭</button>
             </div>
           </div>

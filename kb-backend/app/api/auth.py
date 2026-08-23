@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import update
 from app.core.dependencies import get_db, get_current_user
 from app.models.user import User
 from app.schemas.auth import LoginRequest, TokenResponse, RegisterRequest, RefreshRequest, UserInfo, PasswordChangeRequest, ProfileUpdateRequest
@@ -94,3 +96,45 @@ async def update_profile(
         roles=[ur.role.role_code for ur in updated.roles],
         status=updated.status,
     )
+
+
+class ApiKeyResponse(BaseModel):
+    has_key: bool
+    masked_key: str
+    is_superuser: bool
+
+
+class ApiKeyUpdateRequest(BaseModel):
+    api_key: str
+
+
+@router.get("/api-key", response_model=ApiKeyResponse)
+async def get_api_key(user: User = Depends(get_current_user)):
+    """获取当前用户的 API key 状态（脱敏显示）"""
+    key = user.llm_api_key or ""
+    if user.is_superuser:
+        return ApiKeyResponse(has_key=True, masked_key="使用系统默认密钥", is_superuser=True)
+    if key:
+        masked = key[:4] + "****" + key[-4:] if len(key) > 8 else "****"
+        return ApiKeyResponse(has_key=True, masked_key=masked, is_superuser=False)
+    return ApiKeyResponse(has_key=False, masked_key="", is_superuser=False)
+
+
+@router.put("/api-key", response_model=ApiKeyResponse)
+async def update_api_key(
+    req: ApiKeyUpdateRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """设置/更新当前用户的 API key（超级管理员不允许设置，使用系统默认）"""
+    if user.is_superuser:
+        raise HTTPException(status_code=403, detail="超级管理员使用系统默认密钥，无需设置")
+    key = req.api_key.strip()
+    await db.execute(
+        update(User).where(User.id == user.id).values(llm_api_key=key)
+    )
+    await db.commit()
+    if key:
+        masked = key[:4] + "****" + key[-4:] if len(key) > 8 else "****"
+        return ApiKeyResponse(has_key=True, masked_key=masked, is_superuser=False)
+    return ApiKeyResponse(has_key=False, masked_key="", is_superuser=False)

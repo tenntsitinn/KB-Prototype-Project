@@ -40,6 +40,7 @@ class RagService:
     ) -> AskResponse | AsyncGenerator[str, None]:
         t_start = time.time()
         session_id = session_id or uuid.uuid4().hex[:16]
+        user_api_key = user.llm_api_key or "" if not user.is_superuser else ""
 
         state: RAGState = {
             "question": question, "user": user, "db": db,
@@ -59,17 +60,17 @@ class RagService:
         context_images: list[str] = result.get("context_images", [])
 
         if stream:
-            return self._ask_streaming(question, context, sources_json, chunks, context_images, session_id, t_start, db, user)
+            return self._ask_streaming(question, context, sources_json, chunks, context_images, session_id, t_start, db, user, user_api_key)
         else:
-            return await self._ask_non_streaming(question, context, sources_json, chunks, context_images, session_id, t_start, db, user)
+            return await self._ask_non_streaming(question, context, sources_json, chunks, context_images, session_id, t_start, db, user, user_api_key)
 
     async def _ask_non_streaming(
         self, question: str, context: str, sources_json: str,
         chunks: list[ChunkResult], context_images: list[str], session_id: str,
-        t_start: float, db: AsyncSession, user: User,
+        t_start: float, db: AsyncSession, user: User, user_api_key: str = "",
     ) -> AskResponse:
         sources = [SourceInfo(**s) for s in json.loads(sources_json)]
-        answer = await self._generate_answer(question, context)
+        answer = await self._generate_answer(question, context, user_api_key)
         answer = self._inject_images(answer, context_images)
         response_time_ms = int((time.time() - t_start) * 1000)
         await self._log_access(db, user.id, session_id, question, answer, chunks, response_time_ms)
@@ -78,12 +79,12 @@ class RagService:
     async def _ask_streaming(
         self, question: str, context: str, sources_json: str,
         chunks: list[ChunkResult], context_images: list[str], session_id: str,
-        t_start: float, db: AsyncSession, user: User,
+        t_start: float, db: AsyncSession, user: User, user_api_key: str = "",
     ) -> AsyncGenerator[str, None]:
         yield f"event: sources\ndata: {sources_json}\n\n"
 
         full_answer = ""
-        async for token in self._generate_answer_stream(question, context):
+        async for token in self._generate_answer_stream(question, context, user_api_key):
             full_answer += token
             yield f"event: delta\ndata: {json.dumps({'content': token}, ensure_ascii=False)}\n\n"
 
@@ -99,8 +100,8 @@ class RagService:
         done_data = json.dumps({"session_id": session_id, "response_time_ms": response_time_ms}, ensure_ascii=False)
         yield f"event: done\ndata: {done_data}\n\n"
 
-    async def _generate_answer(self, question: str, context: str) -> str:
-        client = _get_llm_client()
+    async def _generate_answer(self, question: str, context: str, user_api_key: str = "") -> str:
+        client = _get_llm_client(user_api_key)
         resp = await client.chat.completions.create(
             model=settings.LLM_MODEL,
             messages=[
@@ -111,8 +112,8 @@ class RagService:
         )
         return resp.choices[0].message.content or ""
 
-    async def _generate_answer_stream(self, question: str, context: str) -> AsyncGenerator[str, None]:
-        client = _get_llm_client()
+    async def _generate_answer_stream(self, question: str, context: str, user_api_key: str = "") -> AsyncGenerator[str, None]:
+        client = _get_llm_client(user_api_key)
         stream = await client.chat.completions.create(
             model=settings.LLM_MODEL,
             messages=[

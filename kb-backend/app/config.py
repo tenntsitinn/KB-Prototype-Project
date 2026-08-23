@@ -1,7 +1,15 @@
+import sys
+
 from pydantic_settings import BaseSettings
+
+_DEFAULT_JWT_SECRET = "change-me-in-production"
+_DEFAULT_MINIO_KEY = "minioadmin"
 
 
 class Settings(BaseSettings):
+    # 运行环境: development | production
+    APP_ENV: str = "development"
+
     # PostgreSQL
     DATABASE_URL: str = "postgresql+asyncpg://kb_user:kb_pass@localhost:5432/knowledge_base"
 
@@ -13,8 +21,8 @@ class Settings(BaseSettings):
 
     # MinIO
     MINIO_ENDPOINT: str = "localhost:9000"
-    MINIO_ACCESS_KEY: str = "minioadmin"
-    MINIO_SECRET_KEY: str = "minioadmin"
+    MINIO_ACCESS_KEY: str = _DEFAULT_MINIO_KEY
+    MINIO_SECRET_KEY: str = _DEFAULT_MINIO_KEY
     MINIO_BUCKET_DOCS: str = "kb-documents"
     MINIO_SECURE: bool = False
 
@@ -88,7 +96,7 @@ class Settings(BaseSettings):
     GAP_SCORE_THRESHOLD: float = 0.5
 
     # JWT
-    JWT_SECRET_KEY: str = "change-me-in-production"
+    JWT_SECRET_KEY: str = _DEFAULT_JWT_SECRET
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 480  # 8 hours
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
@@ -98,3 +106,24 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def _check_production_security(s: Settings) -> list[str]:
+    if s.APP_ENV != "production":
+        return []
+    failures: list[str] = []
+    if s.JWT_SECRET_KEY == _DEFAULT_JWT_SECRET:
+        failures.append("JWT_SECRET_KEY is still the default value")
+    if len(s.JWT_SECRET_KEY) < 32:
+        failures.append("JWT_SECRET_KEY must be at least 32 bytes in production")
+    if s.MINIO_SECRET_KEY == _DEFAULT_MINIO_KEY:
+        failures.append("MINIO_SECRET_KEY is still the default value")
+    return failures
+
+
+_failures = _check_production_security(settings)
+if _failures:
+    print("FATAL: production security check failed:", file=sys.stderr)
+    for f in _failures:
+        print(f"  - {f}", file=sys.stderr)
+    sys.exit(1)

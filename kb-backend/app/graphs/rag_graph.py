@@ -82,20 +82,20 @@ class RAGState(TypedDict, total=False):
 
 
 # ============================================================================
-# LLM 客户端（单例）
+# LLM 客户端（按 API key 缓存）
 # ============================================================================
 
-_llm_client: AsyncOpenAI | None = None
+_llm_clients: dict[str, AsyncOpenAI] = {}
 
 
-def _get_llm_client() -> AsyncOpenAI:
-    global _llm_client
-    if _llm_client is None:
-        _llm_client = AsyncOpenAI(
-            api_key=settings.LLM_API_KEY or settings.EMBEDDING_API_KEY,
+def _get_llm_client(api_key: str = "") -> AsyncOpenAI:
+    key = api_key or settings.LLM_API_KEY or settings.EMBEDDING_API_KEY
+    if key not in _llm_clients:
+        _llm_clients[key] = AsyncOpenAI(
+            api_key=key,
             base_url=settings.LLM_BASE_URL or settings.EMBEDDING_BASE_URL,
         )
-    return _llm_client
+    return _llm_clients[key]
 
 
 # ============================================================================
@@ -118,9 +118,9 @@ async def _embedding_search(query: str, limit: int, threshold: float) -> list[Ch
     ]
 
 
-async def _hyde_search(question: str, limit: int, threshold: float) -> list[ChunkResult]:
+async def _hyde_search(question: str, limit: int, threshold: float, user_api_key: str = "") -> list[ChunkResult]:
     try:
-        client = _get_llm_client()
+        client = _get_llm_client(user_api_key)
         resp = await client.chat.completions.create(
             model=settings.LLM_MODEL,
             messages=[{"role": "user", "content": HYDE_PROMPT.format(question=question)}],

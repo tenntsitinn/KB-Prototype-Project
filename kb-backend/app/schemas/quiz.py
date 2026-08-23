@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field
 
 class NextQuestionRequest(BaseModel):
     category: str = ""
+    source_unit_id: str = ""
+    source_unit_ids: list[str] = Field(default_factory=list)
     asked_question_ids: list[str] = Field(default_factory=list)
 
 

@@ -24,12 +24,13 @@ export default function KnowledgeManage() {
 
   // Filter state
   const [searchQuery, setSearchQuery] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1)
-  const [, setTotal] = useState(0)
+  const [total, setTotal] = useState(0)
 
   // Selection state
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -90,16 +91,8 @@ export default function KnowledgeManage() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
 
-  // Derived state
-  const filteredData = data.filter((item) => {
-    if (searchQuery && !item.title.toLowerCase().includes(searchQuery.toLowerCase())) return false
-    if (categoryFilter && item.category !== categoryFilter) return false
-    if (statusFilter && item.status !== statusFilter) return false
-    return true
-  })
-  const totalPages = Math.ceil(filteredData.length / PAGE_SIZE)
-  const safePage = Math.max(1, Math.min(currentPage, totalPages || 1))
-  const pageItems = filteredData.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const safePage = Math.max(1, Math.min(currentPage, totalPages))
 
   // ===== Toast =====
   const showToast = useCallback((message: string, type: 'success' | 'error') => {
@@ -113,10 +106,21 @@ export default function KnowledgeManage() {
     setLoading(true)
     setError(null)
     try {
-      const res = await api.get('/api/knowledge/units')
-      const list = Array.isArray(res.data) ? res.data : res.data?.data || res.data?.items || []
-      setData(list)
-      setTotal(list.length)
+      const params: Record<string, any> = {
+        offset: (currentPage - 1) * PAGE_SIZE,
+        limit: PAGE_SIZE,
+      }
+      if (debouncedSearch) params.title = debouncedSearch
+      if (categoryFilter) params.category = categoryFilter
+      if (statusFilter) params.status = statusFilter
+      const res = await api.get('/api/knowledge/units', { params })
+      const items = res.data?.items || []
+      const totalCount = res.data?.total || 0
+      setData(items)
+      setTotal(totalCount)
+      if (items.length === 0 && currentPage > 1) {
+        setCurrentPage(Math.max(1, Math.ceil(totalCount / PAGE_SIZE)))
+      }
     } catch (err: any) {
       const msg = err?.response?.data?.detail || err?.response?.data?.message || err?.message || '加载失败'
       setError(msg)
@@ -124,7 +128,7 @@ export default function KnowledgeManage() {
     } finally {
       setLoading(false)
     }
-  }, [showToast])
+  }, [showToast, currentPage, debouncedSearch, categoryFilter, statusFilter])
 
   const fetchDepartments = useCallback(async () => {
     try {
@@ -157,11 +161,19 @@ export default function KnowledgeManage() {
   }, [])
 
   useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300)
+    return () => clearTimeout(timer)
+  }, [searchQuery])
+
+  useEffect(() => {
     fetchData()
+  }, [fetchData])
+
+  useEffect(() => {
     fetchDepartments()
     fetchRoles()
     fetchTags()
-  }, [fetchData, fetchDepartments, fetchRoles, fetchTags])
+  }, [fetchDepartments, fetchRoles, fetchTags])
 
   // ===== Upload =====
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -473,7 +485,8 @@ export default function KnowledgeManage() {
     if (!window.confirm('确定要删除该知识单元吗？')) return
     try {
       await api.delete(`/api/knowledge/units/${id}`)
-      setData((prev) => prev.map((u) => u.id === id ? { ...u, status: 'deleted' as const } : u))
+      setData((prev) => prev.filter((u) => u.id !== id))
+      setTotal((prev) => Math.max(0, prev - 1))
       setSelectedIds((prev) => {
         const next = new Set(prev)
         next.delete(id)
@@ -491,9 +504,9 @@ export default function KnowledgeManage() {
     if (!window.confirm(`确定要批量删除 ${selectedIds.size} 个知识单元吗？`)) return
     try {
       await api.delete('/api/knowledge/units', { data: { unit_ids: Array.from(selectedIds) } })
-      setData((prev) =>
-        prev.map((u) => (selectedIds.has(u.id) ? { ...u, status: 'deleted' as const } : u))
-      )
+      const deletedCount = selectedIds.size
+      setData((prev) => prev.filter((u) => !selectedIds.has(u.id)))
+      setTotal((prev) => Math.max(0, prev - deletedCount))
       setSelectedIds(new Set())
       showToast('已批量删除', 'success')
     } catch (err: any) {
@@ -616,11 +629,11 @@ export default function KnowledgeManage() {
   // ===== Selection =====
   const toggleSelectAll = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.checked) {
-      setSelectedIds(new Set(pageItems.map((item) => item.id)))
+      setSelectedIds(new Set(data.map((item) => item.id)))
     } else {
       setSelectedIds(new Set())
     }
-  }, [pageItems])
+  }, [data])
 
   const toggleSelectOne = useCallback((id: string) => {
     setSelectedIds((prev) => {
@@ -631,12 +644,16 @@ export default function KnowledgeManage() {
     })
   }, [])
 
-  const isAllSelected = pageItems.length > 0 && pageItems.every((item) => selectedIds.has(item.id))
+  const isAllSelected = data.length > 0 && data.every((item) => selectedIds.has(item.id))
 
   // ===== Pagination =====
   useEffect(() => {
     setCurrentPage(1)
-  }, [searchQuery, categoryFilter, statusFilter])
+  }, [debouncedSearch, categoryFilter, statusFilter])
+
+  useEffect(() => {
+    setSelectedIds(new Set())
+  }, [currentPage])
 
   // ===== Render =====
   return (
@@ -781,7 +798,7 @@ export default function KnowledgeManage() {
       <div style={S.tableCard}>
         <div style={S.tableCardHeader}>
           <h3 style={S.tableCardHeaderH3}>知识单元列表</h3>
-          <span style={S.tableCardHeaderCount}>共 {filteredData.length} 条</span>
+          <span style={S.tableCardHeaderCount}>共 {total} 条</span>
         </div>
         <div style={S.tableWrapper}>
           <table style={S.table}>
@@ -818,7 +835,7 @@ export default function KnowledgeManage() {
                     </div>
                   </td>
                 </tr>
-              ) : pageItems.length === 0 ? (
+              ) : data.length === 0 ? (
                 <tr>
                   <td colSpan={7}>
                     <div style={S.emptyState}>
@@ -828,7 +845,7 @@ export default function KnowledgeManage() {
                   </td>
                 </tr>
               ) : (
-                pageItems.map((item) => (
+                data.map((item) => (
                   <tr
                     key={item.id}
                     onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'var(--bg-hover)' }}
@@ -885,9 +902,9 @@ export default function KnowledgeManage() {
         {/* Pagination */}
         <div style={S.pagination}>
           <div style={S.paginationInfo}>
-            {filteredData.length === 0
+            {total === 0
               ? '显示 0-0，共 0 条'
-              : `显示 ${(safePage - 1) * PAGE_SIZE + 1}-${Math.min(safePage * PAGE_SIZE, filteredData.length)}，共 ${filteredData.length} 条`
+              : `显示 ${(safePage - 1) * PAGE_SIZE + 1}-${Math.min(safePage * PAGE_SIZE, total)}，共 ${total} 条`
             }
           </div>
           {totalPages > 1 && (

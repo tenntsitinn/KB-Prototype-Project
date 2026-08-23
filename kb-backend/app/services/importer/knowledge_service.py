@@ -2,7 +2,10 @@ from datetime import datetime
 from sqlalchemy import select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from app.models.knowledge_unit import KnowledgeUnit, UnitPermission, UnitStatus
+from app.models.knowledge_unit import (
+    KnowledgeUnit, UnitPermission, UnitStatus,
+    QuizQuestion, QuizQuestionStatus,
+)
 from app.models.user import User, UserRole
 from app.schemas.knowledge import KnowledgeUnitCreate, KnowledgeUnitUpdate, PermissionCreate
 from app.config import settings
@@ -33,16 +36,24 @@ async def update_knowledge_unit(db: AsyncSession, unit_id: str, data: KnowledgeU
 
 
 async def soft_delete_knowledge_unit(db: AsyncSession, unit_id: str) -> bool:
-    """软删除知识单元"""
+    """软删除知识单元，同步下架关联题目"""
     stmt = (
         update(KnowledgeUnit)
         .where(KnowledgeUnit.id == unit_id, KnowledgeUnit.status != UnitStatus.DELETED)
         .values(status=UnitStatus.DELETED, deleted_at=datetime.utcnow())
     )
     result = await db.execute(stmt)
-    await db.commit()
 
     if result.rowcount > 0:
+        await db.execute(
+            update(QuizQuestion)
+            .where(
+                QuizQuestion.source_unit_id == unit_id,
+                QuizQuestion.status == QuizQuestionStatus.PUBLISHED,
+            )
+            .values(status=QuizQuestionStatus.OFFLINE)
+        )
+        await db.commit()
         _delete_milvus_vectors(unit_id)
 
     return result.rowcount > 0
@@ -150,6 +161,7 @@ async def cleanup_soft_deleted(db: AsyncSession, days: int = 7) -> list[str]:
         # 硬删除 DB 记录
         del_stmt = delete(KnowledgeUnit).where(KnowledgeUnit.id.in_(unit_ids))
         await db.execute(del_stmt)
+        await db.execute(delete(QuizQuestion).where(QuizQuestion.source_unit_id.in_(unit_ids)))
         await db.commit()
 
     return unit_ids
@@ -236,19 +248,30 @@ async def check_unit_permissions(
 
 
 async def restore_knowledge_unit(db: AsyncSession, unit_id: str) -> bool:
-    """恢复软删除的知识单元"""
+    """恢复软删除的知识单元，同步重新发布已下架题目"""
     stmt = (
         update(KnowledgeUnit)
         .where(KnowledgeUnit.id == unit_id, KnowledgeUnit.status == UnitStatus.DELETED)
         .values(status=UnitStatus.DRAFT, deleted_at=None)
     )
     result = await db.execute(stmt)
-    await db.commit()
+
+    if result.rowcount > 0:
+        await db.execute(
+            update(QuizQuestion)
+            .where(
+                QuizQuestion.source_unit_id == unit_id,
+                QuizQuestion.status == QuizQuestionStatus.OFFLINE,
+            )
+            .values(status=QuizQuestionStatus.PUBLISHED)
+        )
+        await db.commit()
+
     return result.rowcount > 0
 
 
 async def permanent_delete_knowledge_unit(db: AsyncSession, unit_id: str) -> bool:
-    """永久删除知识单元（清理 MinIO + Milvus + DB）"""
+    """永久删除知识单元（清理 MinIO + Milvus + DB + 题目）"""
     from app.services.importer.minio_client import delete_prefix
     from app.config import settings
 
@@ -268,17 +291,18 @@ async def permanent_delete_knowledge_unit(db: AsyncSession, unit_id: str) -> boo
     # 删除 Milvus 向量
     _delete_milvus_vectors(unit_id)
 
-    # 硬删除 DB 记录（含切片，软删除时保留以便恢复）
+    # 硬删除 DB 记录（含切片和关联题目）
     del_stmt = delete(KnowledgeUnit).where(KnowledgeUnit.id == unit_id)
     await db.execute(del_stmt)
     from app.models.knowledge_unit import KnowledgeChunk
     await db.execute(delete(KnowledgeChunk).where(KnowledgeChunk.unit_id == unit_id))
+    await db.execute(delete(QuizQuestion).where(QuizQuestion.source_unit_id == unit_id))
     await db.commit()
     return True
 
 
 async def batch_soft_delete_knowledge_units(db: AsyncSession, unit_ids: list[str]) -> int:
-    """批量软删除知识单元，返回成功删除的数量"""
+    """批量软删除知识单元，同步下架关联题目"""
     if not unit_ids:
         return 0
     stmt = (
@@ -290,16 +314,24 @@ async def batch_soft_delete_knowledge_units(db: AsyncSession, unit_ids: list[str
         .values(status=UnitStatus.DELETED, deleted_at=datetime.utcnow())
     )
     result = await db.execute(stmt)
-    await db.commit()
 
     if result.rowcount > 0:
+        await db.execute(
+            update(QuizQuestion)
+            .where(
+                QuizQuestion.source_unit_id.in_(unit_ids),
+                QuizQuestion.status == QuizQuestionStatus.PUBLISHED,
+            )
+            .values(status=QuizQuestionStatus.OFFLINE)
+        )
+        await db.commit()
         for uid in unit_ids:
             _delete_milvus_vectors(uid)
     return result.rowcount
 
 
 async def batch_restore_knowledge_units(db: AsyncSession, unit_ids: list[str]) -> int:
-    """批量恢复已删除的知识单元，返回成功恢复的数量"""
+    """批量恢复已删除的知识单元，同步重新发布已下架题目"""
     if not unit_ids:
         return 0
     stmt = (
@@ -311,12 +343,22 @@ async def batch_restore_knowledge_units(db: AsyncSession, unit_ids: list[str]) -
         .values(status=UnitStatus.PUBLISHED, deleted_at=None)
     )
     result = await db.execute(stmt)
-    await db.commit()
+
+    if result.rowcount > 0:
+        await db.execute(
+            update(QuizQuestion)
+            .where(
+                QuizQuestion.source_unit_id.in_(unit_ids),
+                QuizQuestion.status == QuizQuestionStatus.OFFLINE,
+            )
+            .values(status=QuizQuestionStatus.PUBLISHED)
+        )
+        await db.commit()
     return result.rowcount
 
 
 async def batch_permanent_delete_knowledge_units(db: AsyncSession, unit_ids: list[str]) -> int:
-    """批量永久删除知识单元（清理 MinIO + Milvus + DB + 切片），返回成功删除的数量"""
+    """批量永久删除知识单元（清理 MinIO + Milvus + DB + 切片 + 题目），返回成功删除的数量"""
     from app.services.importer.minio_client import delete_prefix
     from app.config import settings
     from app.models.knowledge_unit import KnowledgeChunk
@@ -341,6 +383,7 @@ async def batch_permanent_delete_knowledge_units(db: AsyncSession, unit_ids: lis
         _delete_milvus_vectors(unit.id)
         await db.execute(delete(KnowledgeUnit).where(KnowledgeUnit.id == unit.id))
         await db.execute(delete(KnowledgeChunk).where(KnowledgeChunk.unit_id == unit.id))
+        await db.execute(delete(QuizQuestion).where(QuizQuestion.source_unit_id == unit.id))
 
     await db.commit()
     return len(units)

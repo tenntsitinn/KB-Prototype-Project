@@ -23,6 +23,12 @@ export interface QuizAnswerResult {
 
 export type Phase = 'select' | 'question' | 'grading' | 'result'
 
+export interface DocumentItem {
+  id: string
+  title: string
+  category: string
+}
+
 export interface HistoryItem {
   question: string
   score: number

@@ -139,6 +139,7 @@ services:
       RERANK_API_KEY: ${RERANK_API_KEY}
       RERANK_BASE_URL: ${RERANK_BASE_URL:-https://api.siliconflow.cn/v1}
       RERANK_MODEL: ${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
+      APP_ENV: ${APP_ENV:-development}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-production}
       USE_UNLIMITED_OCR: ${USE_UNLIMITED_OCR:-false}
       UNLIMITED_OCR_URL: ${UNLIMITED_OCR_URL:-}
@@ -182,6 +183,7 @@ services:
       RERANK_API_KEY: ${RERANK_API_KEY}
       RERANK_BASE_URL: ${RERANK_BASE_URL:-https://api.siliconflow.cn/v1}
       RERANK_MODEL: ${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
+      APP_ENV: ${APP_ENV:-development}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-production}
       USE_UNLIMITED_OCR: ${USE_UNLIMITED_OCR:-false}
       UNLIMITED_OCR_URL: ${UNLIMITED_OCR_URL:-}
@@ -227,6 +229,7 @@ services:
       LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
       FAQ_MINING_DAYS: ${FAQ_MINING_DAYS:-30}
       FAQ_MINING_THRESHOLD: ${FAQ_MINING_THRESHOLD:-3}
+      APP_ENV: ${APP_ENV:-development}
       USE_UNLIMITED_OCR: ${USE_UNLIMITED_OCR:-false}
       UNLIMITED_OCR_URL: ${UNLIMITED_OCR_URL:-}
     volumes:

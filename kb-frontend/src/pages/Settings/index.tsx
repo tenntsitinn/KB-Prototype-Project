@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useAuthStore } from '../../stores/authStore'
 import api from '../../services/api'
 
@@ -12,9 +12,51 @@ export default function Settings() {
   const [saving, setSaving] = useState(false)
   const [toast, setToast] = useState({ msg: '', type: '' })
 
+  const [apiKeyInput, setApiKeyInput] = useState('')
+  const [apiKeyInfo, setApiKeyInfo] = useState<{ has_key: boolean; masked_key: string; is_superuser: boolean } | null>(null)
+  const [savingKey, setSavingKey] = useState(false)
+  const [showKeyInput, setShowKeyInput] = useState(false)
+
   function showToast(msg: string, type: string) {
     setToast({ msg, type })
     setTimeout(() => setToast({ msg: '', type: '' }), 3000)
+  }
+
+  useEffect(() => {
+    api.get('/api/auth/api-key').then(res => {
+      setApiKeyInfo(res.data)
+    }).catch(() => {})
+  }, [])
+
+  async function handleSaveApiKey() {
+    if (!apiKeyInput.trim()) { showToast('请输入 API Key', 'error'); return }
+    setSavingKey(true)
+    try {
+      const res = await api.put('/api/auth/api-key', { api_key: apiKeyInput.trim() })
+      setApiKeyInfo(res.data)
+      setApiKeyInput('')
+      setShowKeyInput(false)
+      showToast('API Key 保存成功', 'success')
+    } catch (err: any) {
+      showToast(err.response?.data?.detail || '保存失败', 'error')
+    } finally {
+      setSavingKey(false)
+    }
+  }
+
+  async function handleClearApiKey() {
+    setSavingKey(true)
+    try {
+      const res = await api.put('/api/auth/api-key', { api_key: '' })
+      setApiKeyInfo(res.data)
+      setApiKeyInput('')
+      setShowKeyInput(false)
+      showToast('API Key 已清除', 'success')
+    } catch (err: any) {
+      showToast(err.response?.data?.detail || '操作失败', 'error')
+    } finally {
+      setSavingKey(false)
+    }
   }
 
   async function handleSave() {
@@ -91,6 +133,59 @@ export default function Settings() {
               <input style={{ ...inputStyle, background: 'var(--bg-card)', color: 'var(--text-muted)' }} type="text" value={user?.department_name || '未设置'} disabled />
               <div style={hintStyle}>部门由管理员分配，如需变更请联系管理员</div>
             </div>
+          </div>
+        </div>
+
+        <div style={sectionStyle}>
+          <div style={sectionHeader}>API Key 配置</div>
+          <div style={sectionBody}>
+            {apiKeyInfo?.is_superuser ? (
+              <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.8 }}>
+                超级管理员使用系统默认密钥，无需单独配置。
+              </div>
+            ) : (
+              <>
+                <div style={{ marginBottom: 12 }}>
+                  <label style={labelStyle}>当前状态</label>
+                  <div style={{ fontSize: 13, color: apiKeyInfo?.has_key ? 'var(--success, #52c41a)' : 'var(--text-muted)' }}>
+                    {apiKeyInfo?.has_key ? `已配置（${apiKeyInfo.masked_key}）` : '未配置，将使用系统默认密钥'}
+                  </div>
+                </div>
+                {showKeyInput ? (
+                  <>
+                    <div style={{ marginBottom: 12 }}>
+                      <label style={labelStyle}>输入 API Key</label>
+                      <input
+                        style={inputStyle}
+                        type="password"
+                        value={apiKeyInput}
+                        onChange={e => setApiKeyInput(e.target.value)}
+                        placeholder="请输入您的 API Key"
+                        autoFocus
+                      />
+                      <div style={hintStyle}>配置后，智能问答和智能出题将使用您自己的 Key 调用 LLM</div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button className="btn btn-primary" onClick={handleSaveApiKey} disabled={savingKey}>
+                        {savingKey ? '保存中...' : '保存'}
+                      </button>
+                      <button className="btn btn-outline" onClick={() => { setShowKeyInput(false); setApiKeyInput('') }}>取消</button>
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="btn btn-outline" onClick={() => setShowKeyInput(true)}>
+                      {apiKeyInfo?.has_key ? '更换 Key' : '设置 Key'}
+                    </button>
+                    {apiKeyInfo?.has_key && (
+                      <button className="btn btn-outline" onClick={handleClearApiKey} disabled={savingKey} style={{ color: 'var(--danger, #ff4d4f)' }}>
+                        清除
+                      </button>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
           </div>
         </div>
 

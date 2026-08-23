@@ -1,25 +1,24 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 
-export interface TagSelectTag {
+export interface DocumentSelectItem {
   id: string
-  name: string
+  title: string
+  category: string
 }
 
-interface TagSelectProps {
-  tags: TagSelectTag[]
+interface DocumentSelectProps {
+  documents: DocumentSelectItem[]
   value: string
   onChange: (value: string) => void
   emptyLabel?: string
-  allowCustom?: boolean
-  maxLength?: number
   placeholder?: string
   width?: number | string
 }
 
-export default function TagSelect({
-  tags, value, onChange, emptyLabel, allowCustom, maxLength, placeholder, width,
-}: TagSelectProps) {
+export default function DocumentSelect({
+  documents, value, onChange, emptyLabel, placeholder, width,
+}: DocumentSelectProps) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({})
@@ -46,7 +45,7 @@ export default function TagSelect({
     calcPosition()
     const onDocDown = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        const dropdown = document.getElementById('tag-select-dropdown')
+        const dropdown = document.getElementById('doc-select-dropdown')
         if (!dropdown || !dropdown.contains(e.target as Node)) setOpen(false)
       }
     }
@@ -69,8 +68,8 @@ export default function TagSelect({
 
   const openList = () => {
     setOpen(true)
-    setQuery(value)
-    requestAnimationFrame(() => inputRef.current?.select())
+    setQuery('')
+    requestAnimationFrame(() => inputRef.current?.focus())
   }
 
   const pick = (v: string) => {
@@ -78,14 +77,13 @@ export default function TagSelect({
     close()
   }
 
+  const selectedDoc = documents.find((d) => d.id === value)
   const q = query.trim().toLowerCase()
-  const filtered = q ? tags.filter((t) => t.name.toLowerCase().includes(q)) : tags
-  const exactMatch = tags.some((t) => t.name === query.trim())
-  const canCreate = !!allowCustom && q.length > 0 && !exactMatch
+  const filtered = q ? documents.filter((d) => d.title.toLowerCase().includes(q)) : documents
 
   const itemStyle = (active: boolean): React.CSSProperties => ({
-    padding: '8px 12px', fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap',
-    overflow: 'hidden', textOverflow: 'ellipsis',
+    padding: '8px 12px', fontSize: 13, cursor: 'pointer',
+    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
     background: active ? 'var(--primary-light)' : 'transparent',
     color: active ? 'var(--primary)' : 'var(--text)',
   })
@@ -102,20 +100,20 @@ export default function TagSelect({
         onClick={() => { if (!open) openList() }}
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" style={{ marginLeft: 10, flexShrink: 0 }}>
-          <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <polyline points="14 2 14 8 20 8" />
         </svg>
         <input
           ref={inputRef}
-          value={open ? query : value}
-          maxLength={maxLength}
-          placeholder={open ? (allowCustom ? '搜索或输入新分类…' : '搜索分类…') : (placeholder || value || (emptyLabel ?? ''))}
-          onChange={(e) => { setQuery(e.target.value); if (!open) setOpen(true) }}
+          value={open ? query : (selectedDoc?.title || '')}
+          readOnly={!open}
+          placeholder={open ? '搜索文档…' : (placeholder || selectedDoc?.title || (emptyLabel ?? ''))}
+          onChange={(e) => { setQuery(e.target.value) }}
           onFocus={openList}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault()
-              if (canCreate) pick(query.trim())
-              else if (filtered.length > 0) pick(filtered[0].name)
+              if (filtered.length > 0) pick(filtered[0].id)
               else if (emptyLabel !== undefined && !q) pick('')
             } else if (e.key === 'Escape') {
               close()
@@ -141,7 +139,7 @@ export default function TagSelect({
 
       {open && createPortal(
         <div
-          id="tag-select-dropdown"
+          id="doc-select-dropdown"
           style={{
             ...dropdownStyle,
             background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8,
@@ -151,22 +149,14 @@ export default function TagSelect({
           {emptyLabel !== undefined && (
             <div style={itemStyle(false)} onClick={() => pick('')}>{emptyLabel}</div>
           )}
-          {filtered.map((t) => (
-            <div key={t.id} style={itemStyle(t.name === value)} onClick={() => pick(t.name)}>
-              {t.name === value ? '✓ ' : ''}{t.name}
+          {filtered.map((d) => (
+            <div key={d.id} style={itemStyle(d.id === value)} onClick={() => pick(d.id)} title={d.title}>
+              {d.id === value ? '✓ ' : ''}{d.title}
             </div>
           ))}
-          {canCreate && (
-            <div
-              style={{ ...itemStyle(false), color: 'var(--primary)', fontWeight: 500 }}
-              onClick={() => pick(query.trim())}
-            >
-              ＋ 使用「{query.trim()}」
-            </div>
-          )}
-          {filtered.length === 0 && !canCreate && (
+          {filtered.length === 0 && (
             <div style={{ padding: '10px 12px', fontSize: 12, color: 'var(--text-muted)' }}>
-              无匹配标签
+              无匹配文档
             </div>
           )}
         </div>,

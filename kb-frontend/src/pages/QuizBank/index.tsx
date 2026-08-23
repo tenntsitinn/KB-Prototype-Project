@@ -96,6 +96,30 @@ export default function QuizBank() {
     finally { setBatchWorking(false) }
   }, [selected, batchWorking, fetchQuestions])
 
+  const batchDelete = useCallback(async () => {
+    if (selected.size === 0 || batchWorking) return
+    if (!confirm(`确定批量删除选中的 ${selected.size} 道题？此操作不可恢复。`)) return
+    setBatchWorking(true)
+    try {
+      const res = await api.delete('/api/quiz/bank', { data: { question_ids: Array.from(selected) } })
+      const ok = res.data?.deleted_count ?? selected.size
+      showToast(`已删除 ${ok} 道题`, 'success')
+      setSelected(new Set())
+      fetchQuestions()
+    } catch { showToast('批量删除失败', 'error') }
+    finally { setBatchWorking(false) }
+  }, [selected, batchWorking, fetchQuestions])
+
+  const deleteQuestion = useCallback(async (id: string) => {
+    if (!confirm('确定删除该题目？此操作不可恢复。')) return
+    try {
+      await api.delete(`/api/quiz/bank/${id}`)
+      showToast('已删除', 'success')
+      setSelected((prev) => { const n = new Set(prev); n.delete(id); return n })
+      fetchQuestions()
+    } catch { showToast('删除失败', 'error') }
+  }, [fetchQuestions])
+
   const openSource = useCallback(async (unitId: string) => {
     const win = window.open('about:blank', '_blank')
     try {
@@ -179,6 +203,9 @@ export default function QuizBank() {
           <button className="btn btn-primary" style={{ fontSize: 12, padding: '4px 12px' }} disabled={batchWorking} onClick={batchApprove}>
             {batchWorking ? '处理中…' : '批量通过选中'}
           </button>
+          <button className="btn btn-danger" style={{ fontSize: 12, padding: '4px 12px' }} disabled={batchWorking} onClick={batchDelete}>
+            {batchWorking ? '处理中…' : '批量删除选中'}
+          </button>
           <button className="btn btn-ghost" style={{ fontSize: 12, padding: '4px 12px' }} onClick={() => setSelected(new Set())}>取消选择</button>
         </div>
       )}
@@ -239,6 +266,7 @@ export default function QuizBank() {
                     >
                       编辑
                     </button>
+                    <button className="btn btn-danger" style={{ fontSize: 12, padding: '4px 10px' }} onClick={() => deleteQuestion(q.id)}>删除</button>
                   </div>
                 </td>
               </tr>

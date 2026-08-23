@@ -20,6 +20,7 @@ jobs:
       run:
         working-directory: kb-backend
     env:
+      APP_ENV: development
       JWT_SECRET_KEY: ci-only-secret-key-with-at-least-32-bytes
     steps:
       - uses: actions/checkout@v4
@@ -46,3 +47,9 @@ jobs:
 
       - name: Unit tests
         run: pytest tests/unit -q
+
+      - name: Integration tests (offline)
+        run: pytest tests/integration -q
+
+      - name: Migration check
+        run: alembic upgrade head --sql > /dev/null

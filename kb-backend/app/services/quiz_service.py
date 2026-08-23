@@ -5,7 +5,7 @@ import random
 import time
 
 from openai import AsyncOpenAI
-from sqlalchemy import select, update
+from sqlalchemy import select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -18,24 +18,28 @@ from app.prompts.quiz_prompts import QUIZ_GENERATE_PROMPT, QUIZ_GRADE_PROMPT
 
 logger = logging.getLogger(__name__)
 
-_llm_client: AsyncOpenAI | None = None
+_llm_clients: dict[str, AsyncOpenAI] = {}
 
 
-def _get_llm_client() -> AsyncOpenAI:
-    global _llm_client
-    if _llm_client is None:
-        _llm_client = AsyncOpenAI(
-            api_key=settings.LLM_API_KEY or settings.EMBEDDING_API_KEY,
+def _get_llm_client(api_key: str = "") -> AsyncOpenAI:
+    key = api_key or settings.LLM_API_KEY or settings.EMBEDDING_API_KEY
+    if key not in _llm_clients:
+        _llm_clients[key] = AsyncOpenAI(
+            api_key=key,
             base_url=settings.LLM_BASE_URL or settings.EMBEDDING_BASE_URL,
         )
-    return _llm_client
+    return _llm_clients[key]
 
 
-async def _recall_context(db: AsyncSession, category: str, user: User, top_k: int = 3) -> list[dict]:
+async def _recall_context(
+    db: AsyncSession, category: str, user: User, top_k: int = 3,
+    source_unit_id: str = "", source_unit_ids: list[str] | None = None,
+) -> list[dict]:
     """随机选一篇可见文档，随机起点取连续若干切片作为出题素材。
 
-    相比 probe 检索（素材池固定、很快无题可出），按文档均匀采样让
-    素材分布覆盖全文，可支撑大量不重复的题目。
+    source_unit_ids 非空时按指定文档集合取素材（树形勾选模式）。
+    source_unit_id 非空时按单个文档取素材（兼容旧模式）。
+    否则按 category 标签取素材。
     """
     from app.models.knowledge_unit import KnowledgeChunk
 
@@ -43,7 +47,11 @@ async def _recall_context(db: AsyncSession, category: str, user: User, top_k: in
         select(KnowledgeUnit.id, KnowledgeUnit.unit_code, KnowledgeUnit.content)
         .where(KnowledgeUnit.status == "published")
     )
-    if category:
+    if source_unit_ids:
+        stmt = stmt.where(KnowledgeUnit.id.in_(source_unit_ids))
+    elif source_unit_id:
+        stmt = stmt.where(KnowledgeUnit.id == source_unit_id)
+    elif category:
         stmt = stmt.where(KnowledgeUnit.category == category)
     result = await db.execute(stmt)
     units = result.all()
@@ -81,9 +89,9 @@ async def _recall_context(db: AsyncSession, category: str, user: User, top_k: in
     return []
 
 
-async def _generate_question(context: str, asked_questions: list[str]) -> dict | None:
+async def _generate_question(context: str, asked_questions: list[str], user_api_key: str = "") -> dict | None:
     """调用 LLM 生成一道题，返回 {question, reference_answer, evidence}"""
-    client = _get_llm_client()
+    client = _get_llm_client(user_api_key)
     asked_text = "\n".join(f"{i+1}. {q}" for i, q in enumerate(asked_questions[-15:])) or "（暂无）"
     prompt = QUIZ_GENERATE_PROMPT.format(asked_questions=asked_text, context=context)
     try:
@@ -104,9 +112,9 @@ async def _generate_question(context: str, asked_questions: list[str]) -> dict |
         return None
 
 
-async def _grade_answer(question: str, reference_answer: str, evidence: str, user_answer: str) -> dict | None:
+async def _grade_answer(question: str, reference_answer: str, evidence: str, user_answer: str, user_api_key: str = "") -> dict | None:
     """调用 LLM 判分，返回 {score, feedback}"""
-    client = _get_llm_client()
+    client = _get_llm_client(user_api_key)
     prompt = QUIZ_GRADE_PROMPT.format(
         question=question, reference_answer=reference_answer,
         evidence=evidence, user_answer=user_answer or "（未作答）",
@@ -133,8 +141,16 @@ async def _grade_answer(question: str, reference_answer: str, evidence: str, use
 
 async def next_question(
     db: AsyncSession, user: User, category: str, asked_question_ids: list[str],
+    source_unit_id: str = "", source_unit_ids: list[str] | None = None,
 ) -> dict | None:
-    """出题入口：题库优先，未命中实时生成并落候选"""
+    """出题入口：题库优先，未命中实时生成并落候选。
+
+    source_unit_ids 非空时按指定文档集合出题（树形勾选模式）。
+    source_unit_id 非空时按单个文档出题（兼容旧模式）。
+    否则按 category 标签出题。
+    """
+    user_api_key = user.llm_api_key or "" if not user.is_superuser else ""
+
     # 1) 题库命中（已发布 + 排除本会话已出）
     bank_stmt = (
         select(QuizQuestion)
@@ -143,7 +159,11 @@ async def next_question(
             QuizQuestion.source_unit_id != "",
         )
     )
-    if category:
+    if source_unit_ids:
+        bank_stmt = bank_stmt.where(QuizQuestion.source_unit_id.in_(source_unit_ids))
+    elif source_unit_id:
+        bank_stmt = bank_stmt.where(QuizQuestion.source_unit_id == source_unit_id)
+    elif category:
         bank_stmt = bank_stmt.where(QuizQuestion.category == category)
     if asked_question_ids:
         bank_stmt = bank_stmt.where(~QuizQuestion.id.in_(asked_question_ids))
@@ -167,7 +187,11 @@ async def next_question(
         }
 
     # 2) 实时生成
-    chunks = await _recall_context(db, category, user)
+    chunks = await _recall_context(
+        db, category, user,
+        source_unit_id=source_unit_id,
+        source_unit_ids=source_unit_ids,
+    )
     if not chunks:
         return None
 
@@ -179,7 +203,7 @@ async def next_question(
         )
         asked_texts = [row[0] for row in prev.all()]
 
-    generated = await _generate_question(context, asked_texts)
+    generated = await _generate_question(context, asked_texts, user_api_key)
     if not generated:
         return None
 
@@ -215,6 +239,7 @@ async def grade_and_record(
     db: AsyncSession, user: User, question_id: str, answer_text: str,
 ) -> dict | None:
     """判分入口：优先题库参考答案；生成题用判分时返回的参考答案兜底"""
+    user_api_key = user.llm_api_key or "" if not user.is_superuser else ""
     q_result = await db.execute(select(QuizQuestion).where(QuizQuestion.id == question_id))
     q = q_result.scalars().first()
     if not q:
@@ -222,7 +247,7 @@ async def grade_and_record(
 
     reference = q.reference_answer or ""
     evidence = ""
-    graded = await _grade_answer(q.question, reference, evidence, answer_text)
+    graded = await _grade_answer(q.question, reference, evidence, answer_text, user_api_key)
     if not graded:
         graded = {"score": 0, "feedback": "判分服务暂不可用，请稍后重试"}
 
@@ -322,3 +347,25 @@ async def review_question(db: AsyncSession, question_id: str, action: str, revie
     await db.commit()
     await db.refresh(q)
     return q
+
+
+async def delete_question(db: AsyncSession, question_id: str) -> bool:
+    """硬删除题目"""
+    q_result = await db.execute(select(QuizQuestion).where(QuizQuestion.id == question_id))
+    q = q_result.scalars().first()
+    if not q:
+        return False
+    await db.execute(delete(QuizQuestion).where(QuizQuestion.id == question_id))
+    await db.commit()
+    return True
+
+
+async def batch_delete_questions(db: AsyncSession, question_ids: list[str]) -> int:
+    """批量硬删除题目，返回实际删除数"""
+    if not question_ids:
+        return 0
+    result = await db.execute(
+        delete(QuizQuestion).where(QuizQuestion.id.in_(question_ids))
+    )
+    await db.commit()
+    return result.rowcount

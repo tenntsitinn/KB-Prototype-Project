@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_db, get_current_user, RequirePermission
@@ -25,8 +25,11 @@ async def next_question(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """出一道题：题库命中优先，未命中实时生成"""
-    result = await quiz_service.next_question(db, user, req.category, req.asked_question_ids)
+    """出一道题：题库命中优先，未命中实时生成。支持按标签或按文档出题。"""
+    result = await quiz_service.next_question(
+        db, user, req.category, req.asked_question_ids,
+        req.source_unit_id, req.source_unit_ids,
+    )
     if not result:
         raise HTTPException(status_code=404, detail="所选范围内暂无可出题的内容")
     return NextQuestionResponse(
@@ -134,6 +137,30 @@ async def review_question(
     if not q:
         raise HTTPException(status_code=404, detail="题目不存在或操作无效")
     return QuestionOut.model_validate(q)
+
+
+@router.delete("/bank/{question_id}")
+async def delete_question(
+    question_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: UserPermissions = Depends(RequirePermission(PERM_QUIZ_MANAGE)),
+):
+    """删除题目（与审核共用 quiz:manage 权限）"""
+    ok = await quiz_service.delete_question(db, question_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="题目不存在")
+    return {"deleted": True}
+
+
+@router.delete("/bank")
+async def batch_delete_questions(
+    question_ids: list[str] = Body(..., embed=True),
+    db: AsyncSession = Depends(get_db),
+    _: UserPermissions = Depends(RequirePermission(PERM_QUIZ_MANAGE)),
+):
+    """批量删除题目（与审核共用 quiz:manage 权限）"""
+    count = await quiz_service.batch_delete_questions(db, question_ids)
+    return {"deleted_count": count}
 
 
 @router.post("/bank/mine")

@@ -12,8 +12,13 @@ async def do_rewrite_query(state: RAGState) -> dict:
     if len(question) <= 10 and "\n" not in question:
         return {"rewritten_query": question}
 
+    user = state.get("user")
+    user_api_key = ""
+    if user and not user.is_superuser:
+        user_api_key = user.llm_api_key or ""
+
     try:
-        client = _get_llm_client()
+        client = _get_llm_client(user_api_key)
         resp = await client.chat.completions.create(
             model=settings.LLM_MODEL,
             messages=[{"role": "user", "content": QUERY_REWRITE_PROMPT.format(question=question)}],
