@@ -72,7 +72,7 @@ flowchart LR
 │   └── docker-compose.yml
 ├── kb-frontend/         # 前端 (React + Vite)
 │   └── src/pages/       # 仪表盘/知识管理/智能问答/FAQ/缺口分析/测验/系统管理
-└── ocr-server/          # 独立 OCR 服务(可选,用于扫描件解析)
+└── ocr-server/          # 独立 OCR 服务(可选,用于扫描件解析)，这里我当时是拿去接了自己部署的unlimitedOCR玩，可以直接忽略，性价比不高
 ```
 
 ## 核心流程实现方式
@@ -223,3 +223,4 @@ npm run build                        # 生产构建
 | 切片/向量化失败状态机与幂等测试 | 导入流水线仅有 happy path 集成测试,失败恢复场景无覆盖 |
 | Docker 镜像构建门禁 | CI 无 `docker build` 校验步骤 |
 
+功能上我打算继续完善出题功能，RAG链基本上不会动了。
