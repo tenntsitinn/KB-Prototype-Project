@@ -2,8 +2,9 @@
 文档导入管道 LangGraph 状态图。
 
 图结构:
-  START → validate → [超限PDF] → split → create_unit → upload_all → parse_all → enrich_images → chunk → vectorize → update → END
+  START → validate → [超限PDF] → split → create_unit → upload_all → parse_all → semantic_dedup → [重复] → END
                     → [正常]    ───────────────────────────────────────────────────────────────────────────────────────┘
+                                                                                  → [未重复] → enrich_images → chunk → vectorize → update → END
 
 本文件包含：状态类型定义、图构建。
 节点函数在 app/nodes/import/。
@@ -48,7 +49,7 @@ class ImportState(TypedDict, total=False):
     chunk_count: int
 
     # ── 输出 ──
-    status: str          # completed | failed
+    status: str          # completed | failed | semantic_duplicate
     error: str
 
     # ── 进度 ──
@@ -74,6 +75,7 @@ def build_import_graph() -> CompiledStateGraph:
     from app.nodes.importer.create_unit import node_create_unit
     from app.nodes.importer.upload_all import node_upload_all
     from app.nodes.importer.parse_all import node_parse_all
+    from app.nodes.importer.semantic_dedup import node_semantic_dedup, route_after_semantic_dedup
     from app.nodes.importer.enrich_images import node_enrich_images
     from app.nodes.importer.chunk import node_chunk
     from app.nodes.importer.vectorize import node_vectorize
@@ -86,6 +88,7 @@ def build_import_graph() -> CompiledStateGraph:
     builder.add_node("create_unit", node_create_unit)
     builder.add_node("upload_all", node_upload_all)
     builder.add_node("parse_all", node_parse_all)
+    builder.add_node("semantic_dedup", node_semantic_dedup)
     builder.add_node("enrich_images", node_enrich_images)
     builder.add_node("chunk", node_chunk)
     builder.add_node("vectorize", node_vectorize)
@@ -96,7 +99,8 @@ def build_import_graph() -> CompiledStateGraph:
     builder.add_edge("split", "create_unit")
     builder.add_edge("create_unit", "upload_all")
     builder.add_edge("upload_all", "parse_all")
-    builder.add_edge("parse_all", "enrich_images")
+    builder.add_edge("parse_all", "semantic_dedup")
+    builder.add_conditional_edges("semantic_dedup", route_after_semantic_dedup, {"duplicate": END, "continue": "enrich_images"})
     builder.add_edge("enrich_images", "chunk")
     builder.add_edge("chunk", "vectorize")
     builder.add_edge("vectorize", "update")

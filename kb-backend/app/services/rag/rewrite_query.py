@@ -14,13 +14,16 @@ async def do_rewrite_query(state: RAGState) -> dict:
 
     user = state.get("user")
     user_api_key = ""
+    user_base_url = ""
+    user_model = ""
     if user and not user.is_superuser:
-        user_api_key = user.llm_api_key or ""
+        from app.core.llm_config import resolve_user_llm_config
+        user_api_key, user_base_url, user_model = resolve_user_llm_config(user)
 
     try:
-        client = _get_llm_client(user_api_key)
+        client = _get_llm_client(user_api_key, user_base_url)
         resp = await client.chat.completions.create(
-            model=settings.LLM_MODEL,
+            model=user_model or settings.LLM_MODEL,
             messages=[{"role": "user", "content": QUERY_REWRITE_PROMPT.format(question=question)}],
             temperature=0.1, max_tokens=256,
         )

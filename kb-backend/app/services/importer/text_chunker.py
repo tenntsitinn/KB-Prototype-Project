@@ -35,18 +35,20 @@ def chunk_text(text: str, chunk_size: int | None = None, overlap: int | None = N
     for para in paragraphs:
         if len(current) + len(para) <= chunk_size:
             current += para + "\n\n"
-        else:
+        elif len(para) > chunk_size:
+            # 超长段落无论缓冲区是否有内容，都按句子切，避免整段粘进 current 后原样超限输出
             if current.strip():
                 chunks.append(_make_chunk(idx, current.strip()))
                 idx += 1
-                # 重叠：保留上一块的尾部
-                current = _tail_overlap(current, overlap) + para + "\n\n"
-            else:
-                # 单段超过 chunk_size，按句子硬切
-                for sub in _split_long_paragraph(para, chunk_size, overlap):
-                    chunks.append(_make_chunk(idx, sub.strip()))
-                    idx += 1
-                current = ""
+            for sub in _split_long_paragraph(para, chunk_size, overlap):
+                chunks.append(_make_chunk(idx, sub.strip()))
+                idx += 1
+            current = ""
+        else:
+            chunks.append(_make_chunk(idx, current.strip()))
+            idx += 1
+            # 重叠：保留上一块的尾部
+            current = _tail_overlap(current, overlap) + para + "\n\n"
 
     if current.strip():
         chunks.append(_make_chunk(idx, current.strip()))
@@ -74,15 +76,21 @@ def _split_long_paragraph(text: str, chunk_size: int, overlap: int) -> list[str]
     for sent in sentences:
         if len(current) + len(sent) <= chunk_size:
             current += sent
+        elif len(sent) > chunk_size:
+            # 单句超过 chunk_size（如无句号的字段列表行），硬切，不能粘连进 current
+            if current.strip():
+                chunks.append(current.strip())
+                current = ""
+            for i in range(0, len(sent), max(chunk_size - overlap, 1)):
+                pieces = sent[i:i + chunk_size].strip()
+                if pieces:
+                    chunks.append(pieces)
         else:
             if current.strip():
                 chunks.append(current.strip())
                 current = _tail_overlap(current, overlap) + sent
             else:
-                # 单句超过 chunk_size，硬切
-                for i in range(0, len(sent), max(chunk_size - overlap, 1)):
-                    chunks.append(sent[i:i + chunk_size].strip())
-                current = ""
+                current = sent
 
     if current.strip():
         chunks.append(current.strip())

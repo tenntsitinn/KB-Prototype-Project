@@ -62,6 +62,7 @@ class RAGState(TypedDict, total=False):
     db: AsyncSession
     session_id: str
     top_k: int
+    scope_chapter_id: str  # 限定检索范围的章节ID（递归含子孙）
 
     # ── 中间结果 ──
     faq_cache_hit: bool
@@ -88,14 +89,13 @@ class RAGState(TypedDict, total=False):
 _llm_clients: dict[str, AsyncOpenAI] = {}
 
 
-def _get_llm_client(api_key: str = "") -> AsyncOpenAI:
+def _get_llm_client(api_key: str = "", base_url: str = "") -> AsyncOpenAI:
     key = api_key or settings.LLM_API_KEY or settings.EMBEDDING_API_KEY
-    if key not in _llm_clients:
-        _llm_clients[key] = AsyncOpenAI(
-            api_key=key,
-            base_url=settings.LLM_BASE_URL or settings.EMBEDDING_BASE_URL,
-        )
-    return _llm_clients[key]
+    url = base_url or settings.LLM_BASE_URL or settings.EMBEDDING_BASE_URL
+    cache_key = f"{url}::{key}"
+    if cache_key not in _llm_clients:
+        _llm_clients[cache_key] = AsyncOpenAI(api_key=key, base_url=url)
+    return _llm_clients[cache_key]
 
 
 # ============================================================================
@@ -118,11 +118,11 @@ async def _embedding_search(query: str, limit: int, threshold: float) -> list[Ch
     ]
 
 
-async def _hyde_search(question: str, limit: int, threshold: float, user_api_key: str = "") -> list[ChunkResult]:
+async def _hyde_search(question: str, limit: int = 0, threshold: float = 0.0, user_api_key: str = "", user_base_url: str = "", user_model: str = "") -> list[ChunkResult]:
     try:
-        client = _get_llm_client(user_api_key)
+        client = _get_llm_client(user_api_key, user_base_url)
         resp = await client.chat.completions.create(
-            model=settings.LLM_MODEL,
+            model=user_model or settings.LLM_MODEL,
             messages=[{"role": "user", "content": HYDE_PROMPT.format(question=question)}],
             temperature=0.7, max_tokens=512,
         )

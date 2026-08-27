@@ -3,50 +3,82 @@ from sqlalchemy import select, update, delete, func
 from sqlalchemy.orm import selectinload
 from app.models.user import User, Role, UserRole, RolePermission, Department
 from app.core.security import hash_password, verify_password
+from app.config import settings
 
 
 async def seed_roles(db: AsyncSession) -> None:
-    """初始化默认角色和权限"""
+    """初始化默认角色和权限。education 模式：超管/系统管理/教师/学员；personal 模式：超管/系统管理/知识管理/普通用户"""
     from app.core.permissions import (
-        PERM_KNOWLEDGE_READ, PERM_KNOWLEDGE_MANAGE,
-        PERM_KNOWLEDGE_UPLOAD, PERM_KNOWLEDGE_MANAGE_PERMISSIONS,
-        PERM_FAQ_MANAGE, PERM_GAP_MANAGE, PERM_DASHBOARD_VIEW, PERM_AI_ACCESS,
+        PERM_KNOWLEDGE_MANAGE,
+        PERM_KNOWLEDGE_MANAGE_PERMISSIONS,
+        PERM_GAP_MANAGE, PERM_DASHBOARD_VIEW,
         PERM_QUIZ_MANAGE, PERM_PERMISSION_MANAGE,
     )
 
     all_knowledge = [
-        PERM_KNOWLEDGE_READ, PERM_KNOWLEDGE_MANAGE,
-        PERM_KNOWLEDGE_UPLOAD, PERM_KNOWLEDGE_MANAGE_PERMISSIONS,
-        PERM_FAQ_MANAGE, PERM_GAP_MANAGE, PERM_DASHBOARD_VIEW, PERM_AI_ACCESS,
+        PERM_KNOWLEDGE_MANAGE,
+        PERM_KNOWLEDGE_MANAGE_PERMISSIONS,
+        PERM_GAP_MANAGE, PERM_DASHBOARD_VIEW,
         PERM_QUIZ_MANAGE,
     ]
 
-    default_roles = [
-        {
-            "role_name": "超级管理员",
-            "role_code": "super_admin",
-            "description": "系统最高权限，拥有权限配置能力",
-            "permissions": all_knowledge + [PERM_PERMISSION_MANAGE],
-        },
-        {
-            "role_name": "系统管理员",
-            "role_code": "system_admin",
-            "description": "系统管理权限",
-            "permissions": all_knowledge,
-        },
-        {
-            "role_name": "知识管理员",
-            "role_code": "knowledge_admin",
-            "description": "知识库管理权限",
-            "permissions": all_knowledge,
-        },
-        {
-            "role_name": "普通用户",
-            "role_code": "regular_user",
-            "description": "基础查询权限",
-            "permissions": [PERM_KNOWLEDGE_READ, PERM_AI_ACCESS],
-        },
-    ]
+    # knowledge:read 和 ai:access 对所有登录用户默认开放，无需配置
+    student_perms = []
+
+    if settings.APP_MODE == "education":
+        default_roles = [
+            {
+                "role_name": "超级管理员",
+                "role_code": "super_admin",
+                "description": "系统最高权限，拥有权限配置能力",
+                "permissions": all_knowledge + [PERM_PERMISSION_MANAGE],
+            },
+            {
+                "role_name": "系统管理员",
+                "role_code": "system_admin",
+                "description": "系统管理权限",
+                "permissions": all_knowledge,
+            },
+            {
+                "role_name": "教师",
+                "role_code": "teacher",
+                "description": "教学管理权限",
+                "permissions": all_knowledge,
+            },
+            {
+                "role_name": "学员",
+                "role_code": "student",
+                "description": "基础学习权限",
+                "permissions": student_perms,
+            },
+        ]
+    else:
+        default_roles = [
+            {
+                "role_name": "超级管理员",
+                "role_code": "super_admin",
+                "description": "系统最高权限，拥有权限配置能力",
+                "permissions": all_knowledge + [PERM_PERMISSION_MANAGE],
+            },
+            {
+                "role_name": "系统管理员",
+                "role_code": "system_admin",
+                "description": "系统管理权限",
+                "permissions": all_knowledge,
+            },
+            {
+                "role_name": "知识管理员",
+                "role_code": "knowledge_admin",
+                "description": "知识库管理权限",
+                "permissions": all_knowledge,
+            },
+            {
+                "role_name": "普通用户",
+                "role_code": "regular_user",
+                "description": "基础查询权限",
+                "permissions": student_perms,
+            },
+        ]
 
     for role_data in default_roles:
         result = await db.execute(select(Role).where(Role.role_code == role_data["role_code"]))
@@ -63,6 +95,37 @@ async def seed_roles(db: AsyncSession) -> None:
         await db.execute(delete(RolePermission).where(RolePermission.role_id == role.id))
         for perm_code in role_data["permissions"]:
             db.add(RolePermission(role_id=role.id, permission_code=perm_code))
+
+    # education 模式下清理不应存在的旧角色（regular_user / knowledge_admin / personal_user）
+    if settings.APP_MODE == "education":
+        obsolete_codes = ["regular_user", "knowledge_admin", "personal_user"]
+        for code in obsolete_codes:
+            role_res = await db.execute(select(Role).where(Role.role_code == code))
+            obsolete_role = role_res.scalar_one_or_none()
+            if obsolete_role:
+                student_res = await db.execute(select(Role).where(Role.role_code == "student"))
+                student_role = student_res.scalar_one_or_none()
+                if student_role:
+                    # 迁移用户到 student 角色
+                    await db.execute(
+                        update(UserRole)
+                        .where(UserRole.role_id == obsolete_role.id)
+                        .values(role_id=student_role.id)
+                    )
+                    # 去重：同一用户不能有重复 student 角色
+                    await db.execute(
+                        delete(UserRole).where(
+                            UserRole.role_id == student_role.id,
+                            UserRole.user_id.in_(
+                                select(UserRole.user_id)
+                                .where(UserRole.role_id == student_role.id)
+                                .group_by(UserRole.user_id)
+                                .having(func.count() > 1)
+                            )
+                        )
+                    )
+                await db.execute(delete(RolePermission).where(RolePermission.role_id == obsolete_role.id))
+                await db.delete(obsolete_role)
 
     await db.commit()
 

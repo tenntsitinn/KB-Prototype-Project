@@ -15,6 +15,7 @@ from alembic import context
 from app.config import settings
 from app.models.knowledge_unit import Base
 import app.models.user  # noqa: F401 — register user-related tables on Base.metadata
+import app.models.education  # noqa: F401 — register education tables on Base.metadata
 
 config = context.config
 

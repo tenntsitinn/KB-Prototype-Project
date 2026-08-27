@@ -9,11 +9,11 @@ from app.api.users import router as users_router
 from app.api.roles import router as roles_router
 from app.api.departments import router as departments_router
 from app.api.rag import router as rag_router
-from app.api.faq import router as faq_router
 from app.api.gap import router as gap_router
 from app.api.dashboard import router as dashboard_router
 from app.api.tags import router as tags_router
 from app.api.quiz import router as quiz_router
+from app.api.education import router as education_router
 from app.core.database import AsyncSessionLocal
 from app.services.user_service import seed_roles, seed_users, cleanup_unknown_permissions
 from app.services.rag import faq_service
@@ -62,11 +62,11 @@ app.include_router(users_router)
 app.include_router(roles_router)
 app.include_router(departments_router)
 app.include_router(rag_router)
-app.include_router(faq_router)
 app.include_router(gap_router)
 app.include_router(dashboard_router)
 app.include_router(tags_router)
 app.include_router(quiz_router)
+app.include_router(education_router)
 
 
 @app.get("/health")

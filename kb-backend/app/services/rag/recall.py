@@ -1,6 +1,7 @@
-"""多路召回 + 权限过滤 + 补召（最多 2 轮）"""
+"""多路召回 + 权限过滤 + 范围过滤 + 补召（最多 2 轮）"""
 import asyncio
 import logging
+from sqlalchemy import text as sa_text
 from app.config import settings
 from app.graphs.rag_graph import (
     ChunkResult, RecallConfig, RAGState,
@@ -10,12 +11,34 @@ from app.graphs.rag_graph import (
 logger = logging.getLogger(__name__)
 
 
+async def _resolve_scope_unit_ids(state: RAGState) -> set[str] | None:
+    """如果指定了 scope_chapter_id，递归查出章节及子孙下所有 unit_id"""
+    chapter_id = state.get("scope_chapter_id")
+    if not chapter_id:
+        return None
+    db = state["db"]
+    row = await db.execute(sa_text("""
+        WITH RECURSIVE ct AS (
+            SELECT id FROM chapters WHERE id = :cid
+            UNION ALL
+            SELECT c.id FROM chapters c JOIN ct ON c.parent_id = ct.id
+        )
+        SELECT DISTINCT ku.id FROM knowledge_units ku
+        WHERE ku.chapter_id IN (SELECT id FROM ct)
+          AND ku.status = 'published'
+    """), {"cid": chapter_id})
+    return {r[0] for r in row.all()}
+
+
 async def do_recall(state: RAGState) -> dict:
     db = state["db"]
     user = state["user"]
     query = state["rewritten_query"]
     top_k = state.get("top_k", settings.RAG_TOP_K)
-    user_api_key = user.llm_api_key or "" if not user.is_superuser else ""
+    from app.core.llm_config import resolve_user_llm_config
+    user_api_key, user_base_url, user_model = resolve_user_llm_config(user)
+
+    scope_unit_ids = await _resolve_scope_unit_ids(state)
 
     config = RecallConfig(
         target_k=top_k,
@@ -36,7 +59,7 @@ async def do_recall(state: RAGState) -> dict:
 
         new_embedding, new_hyde, new_keyword = await asyncio.gather(
             _embedding_search(query, limit, threshold),
-            _hyde_search(query, limit, threshold, user_api_key),
+            _hyde_search(query, limit, threshold, user_api_key, user_base_url, user_model),
             _keyword_search(db, query, limit),
         )
 
@@ -53,6 +76,11 @@ async def do_recall(state: RAGState) -> dict:
         all_embedding = [r for r in all_embedding if r.unit_id in allowed_ids]
         all_hyde = [r for r in all_hyde if r.unit_id in allowed_ids]
         all_keyword = [r for r in all_keyword if r.unit_id in allowed_ids]
+
+        if scope_unit_ids is not None:
+            all_embedding = [r for r in all_embedding if r.unit_id in scope_unit_ids]
+            all_hyde = [r for r in all_hyde if r.unit_id in scope_unit_ids]
+            all_keyword = [r for r in all_keyword if r.unit_id in scope_unit_ids]
 
         total = len(all_embedding) + len(all_hyde) + len(all_keyword)
         if total >= config.target_k:

@@ -70,15 +70,6 @@ def _ensure_collection() -> MilvusClient:
             auto_id=True,
             enable_dynamic_field=True,
         )
-        client.create_index(
-            collection_name=settings.MILVUS_COLLECTION,
-            field_name="vector",
-            index_params={
-                "index_type": "HNSW",
-                "metric_type": "COSINE",
-                "params": {"M": 16, "efConstruction": 200},
-            },
-        )
     client.load_collection(settings.MILVUS_COLLECTION)
     return client
 

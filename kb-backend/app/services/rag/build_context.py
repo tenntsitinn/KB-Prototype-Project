@@ -3,9 +3,17 @@ import re
 from app.graphs.rag_graph import RAGState
 
 
+_IMAGE_REF_PATTERN = re.compile(r"!\[.*?\]\([^)]+\)")
+
+
 def _extract_images(text: str) -> list[str]:
     """从文本中提取所有 markdown 图片引用 ![...](...)"""
-    return re.findall(r"!\[.*?\]\([^)]+\)", text)
+    return _IMAGE_REF_PATTERN.findall(text)
+
+
+def _extract_image_urls(text: str) -> list[str]:
+    """提取图片引用中的 URL 部分（去重键，alt 文本不同的同图视为同一张）"""
+    return re.findall(r"!\[.*?\]\(([^)]+)\)", text)
 
 
 def _wrap_latex_math(text: str) -> str:
@@ -42,14 +50,16 @@ def do_build_context(state: RAGState) -> dict:
 
     parts = []
     all_images: list[str] = []
-    seen_images: set[str] = set()
+    seen_urls: set[str] = set()
 
     for i, c in enumerate(chunks):
         chunk_text = _wrap_latex_math(c.chunk_text)
         parts.append(f"[来源{i + 1}] (unit_code: {c.unit_code})\n{chunk_text}")
         for img in _extract_images(chunk_text):
-            if img not in seen_images:
-                seen_images.add(img)
-                all_images.append(img)
+            urls = _extract_image_urls(img)
+            if not urls or urls[0] in seen_urls:
+                continue
+            seen_urls.add(urls[0])
+            all_images.append(img)
 
     return {"context": "\n\n---\n\n".join(parts), "context_images": all_images}

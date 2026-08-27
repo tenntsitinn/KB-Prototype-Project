@@ -25,21 +25,25 @@ interface AuthState {
 }
 
 function getRoleLabel(user: UserInfo | null): string {
-  if (!user) return '普通用户'
+  if (!user) return '学员'
   if (user.is_superuser) return '超级管理员'
   const roles = user.roles || []
   if (roles.includes('super_admin')) return '超级管理员'
   if (roles.includes('system_admin')) return '系统管理员'
+  if (roles.includes('teacher')) return '教师'
   if (roles.includes('knowledge_admin')) return '知识管理员'
-  return '普通用户'
+  if (roles.includes('student')) return '学员'
+  return '学员'
 }
 
 function getRoleLabelStatic(roles: string[]): string {
-  if (!roles) return '普通用户'
+  if (!roles) return '学员'
   if (roles.includes('super_admin')) return '超级管理员'
   if (roles.includes('system_admin')) return '系统管理员'
+  if (roles.includes('teacher')) return '教师'
   if (roles.includes('knowledge_admin')) return '知识管理员'
-  return '普通用户'
+  if (roles.includes('student')) return '学员'
+  return '学员'
 }
 
 export { getRoleLabel, getRoleLabelStatic }

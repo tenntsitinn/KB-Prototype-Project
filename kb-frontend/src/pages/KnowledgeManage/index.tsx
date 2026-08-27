@@ -1,7 +1,7 @@
 ﻿import { useState, useEffect, useRef, useCallback } from 'react'
 import api from '../../services/api'
 import { useAuthStore } from '../../stores/authStore'
-import { PAGE_SIZE, PERM_TYPE_MAP, STATUS_MAP, formatDate, formatSize, getPermissionTargetName, type Department, type ImportTask, type KnowledgeUnit, type Permission, type Role, type Tag } from './model'
+import { PAGE_SIZE, PERM_TYPE_MAP, STATUS_MAP, formatDate, formatSize, getPermissionTargetName, type Department, type ImportTask, type KnowledgeUnit, type Permission, type Role, type Tag, type Course, type ChapterTreeNode, type KnowledgePointOption } from './model'
 import { S } from './styles'
 import { CloseIcon, DeleteIcon, EmptySearchIcon, SearchIcon, UploadIcon } from './icons'
 import TagSelect from '../../components/TagSelect'
@@ -10,7 +10,7 @@ export default function KnowledgeManage() {
 
   const { hasPermission } = useAuthStore()
   const canManage = hasPermission('knowledge:manage')
-  const canUpload = hasPermission('knowledge:upload')
+  const canUpload = canManage
   const canWrite = canManage
   const canDelete = canManage
 
@@ -27,6 +27,14 @@ export default function KnowledgeManage() {
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
+
+  // Education cascade filter state
+  const [courses, setCourses] = useState<Course[]>([])
+  const [selectedCourseId, setSelectedCourseId] = useState('')
+  const [chapterTree, setChapterTree] = useState<ChapterTreeNode[]>([])
+  const [selectedChapterId, setSelectedChapterId] = useState('')
+  const [knowledgePoints, setKnowledgePoints] = useState<KnowledgePointOption[]>([])
+  const [selectedKpId, setSelectedKpId] = useState('')
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1)
@@ -113,6 +121,8 @@ export default function KnowledgeManage() {
       if (debouncedSearch) params.title = debouncedSearch
       if (categoryFilter) params.category = categoryFilter
       if (statusFilter) params.status = statusFilter
+      if (selectedCourseId) params.course_id = selectedCourseId
+      if (selectedChapterId) params.chapter_id = selectedChapterId
       const res = await api.get('/api/knowledge/units', { params })
       const items = res.data?.items || []
       const totalCount = res.data?.total || 0
@@ -128,7 +138,7 @@ export default function KnowledgeManage() {
     } finally {
       setLoading(false)
     }
-  }, [showToast, currentPage, debouncedSearch, categoryFilter, statusFilter])
+  }, [showToast, currentPage, debouncedSearch, categoryFilter, statusFilter, selectedCourseId, selectedChapterId])
 
   const fetchDepartments = useCallback(async () => {
     try {
@@ -160,6 +170,55 @@ export default function KnowledgeManage() {
     }
   }, [])
 
+  const fetchCourses = useCallback(async () => {
+    try {
+      const res = await api.get('/api/education/courses')
+      setCourses(res.data?.items || [])
+    } catch {
+      // Non-critical
+    }
+  }, [])
+
+  const fetchChapters = useCallback(async (courseId: string) => {
+    if (!courseId) { setChapterTree([]); return }
+    try {
+      const res = await api.get(`/api/education/courses/${courseId}/chapters/tree`)
+      setChapterTree(res.data?.tree || [])
+    } catch {
+      setChapterTree([])
+    }
+  }, [])
+
+  const fetchKnowledgePoints = useCallback(async (chapterId: string) => {
+    if (!chapterId) { setKnowledgePoints([]); return }
+    try {
+      const res = await api.get(`/api/education/chapters/${chapterId}/knowledge-points`)
+      setKnowledgePoints(res.data?.items || [])
+    } catch {
+      setKnowledgePoints([])
+    }
+  }, [])
+
+  const handleCourseChange = useCallback((courseId: string) => {
+    setSelectedCourseId(courseId)
+    setSelectedChapterId('')
+    setSelectedKpId('')
+    setChapterTree([])
+    setKnowledgePoints([])
+    if (courseId) fetchChapters(courseId)
+  }, [fetchChapters])
+
+  const handleChapterChange = useCallback((chapterId: string) => {
+    setSelectedChapterId(chapterId)
+    setSelectedKpId('')
+    setKnowledgePoints([])
+    if (chapterId) fetchKnowledgePoints(chapterId)
+  }, [fetchKnowledgePoints])
+
+  const handleKpChange = useCallback((kpId: string) => {
+    setSelectedKpId(kpId)
+  }, [])
+
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300)
     return () => clearTimeout(timer)
@@ -173,7 +232,8 @@ export default function KnowledgeManage() {
     fetchDepartments()
     fetchRoles()
     fetchTags()
-  }, [fetchDepartments, fetchRoles, fetchTags])
+    fetchCourses()
+  }, [fetchDepartments, fetchRoles, fetchTags, fetchCourses])
 
   // ===== Upload =====
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -184,7 +244,93 @@ export default function KnowledgeManage() {
     if (fileInputRef.current) fileInputRef.current.value = ''
   }, [])
 
+  const CHUNK_SIZE = 5 * 1024 * 1024  // 5MB
+  const CHUNK_THRESHOLD = 10 * 1024 * 1024  // 10MB 以上使用分片上传
+  const CONCURRENT_UPLOADS = 3
+
+  const startChunkedImport = useCallback(async (file: File) => {
+    const taskId = 'import_' + Date.now()
+    const uploadId = `${file.name}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
+
+    const task: ImportTask = {
+      id: taskId,
+      fileName: file.name,
+      fileSize: file.size,
+      progress: 0,
+      status: 'uploading',
+    }
+    setImportTask(task)
+
+    try {
+      // 断点续传：查询已上传的分片
+      const checkRes = await api.get('/api/knowledge/upload/chunks', { params: { upload_id: uploadId } })
+      const uploadedSet = new Set<number>(checkRes.data?.uploaded || [])
+
+      // 分批并发上传（每批 CONCURRENT_UPLOADS 个）
+      for (let batchStart = 0; batchStart < totalChunks; batchStart += CONCURRENT_UPLOADS) {
+        const batchPromises: Promise<void>[] = []
+
+        for (let i = batchStart; i < Math.min(batchStart + CONCURRENT_UPLOADS, totalChunks); i++) {
+          if (uploadedSet.has(i)) continue
+
+          const start = i * CHUNK_SIZE
+          const end = Math.min(start + CHUNK_SIZE, file.size)
+          const chunk = file.slice(start, end)
+
+          const formData = new FormData()
+          formData.append('upload_id', uploadId)
+          formData.append('chunk_index', String(i))
+          formData.append('total_chunks', String(totalChunks))
+          formData.append('chunk', chunk, file.name)
+
+          batchPromises.push(
+            api.post('/api/knowledge/upload/chunk', formData, {
+              headers: { 'Content-Type': 'multipart/form-data' },
+              timeout: 60000,
+            }).then(() => {
+              uploadedSet.add(i)
+              const pct = Math.floor((uploadedSet.size / totalChunks) * 100)
+              setImportTask(prev => prev ? { ...prev, progress: pct } : null)
+            })
+          )
+        }
+
+        await Promise.all(batchPromises)
+      }
+
+      // 合并分片并启动导入
+      setImportTask(prev => prev ? { ...prev, status: 'processing', progress: 0 } : null)
+
+      const mergeFormData = new FormData()
+      mergeFormData.append('upload_id', uploadId)
+      mergeFormData.append('filename', file.name)
+      mergeFormData.append('total_chunks', String(totalChunks))
+      mergeFormData.append('use_unlimited_ocr', String(useUnlimitedOcr))
+      if (uploadCategory) mergeFormData.append('category', uploadCategory)
+
+      const res = await api.post('/api/knowledge/upload/merge', mergeFormData, {
+        timeout: 120000,
+      })
+
+      setImportTask(prev => prev ? { ...prev, progress: 100, status: 'completed' } : null)
+      showToast('导入成功', 'success')
+      fetchData()
+      fetchTags()
+      setUploadCategory('')
+      setTimeout(() => setImportTask(null), 2000)
+    } catch (err: any) {
+      setImportTask(prev => prev ? { ...prev, status: 'failed' } : null)
+      const msg = err?.response?.data?.detail || err?.message || '导入失败'
+      showToast(msg, 'error')
+    }
+  }, [showToast, fetchData, uploadCategory, useUnlimitedOcr])
+
   const startImport = useCallback(async (file: File) => {
+    if (file.size > CHUNK_THRESHOLD) {
+      return startChunkedImport(file)
+    }
+
     const taskId = 'import_' + Date.now()
     const task: ImportTask = {
       id: taskId,
@@ -210,7 +356,6 @@ export default function KnowledgeManage() {
       setImportTask((prev) => prev ? { ...prev, progress: 100, status: 'completed' } : null)
       showToast('导入成功', 'success')
 
-      // Refresh list + tags（新分类可能已自动入库）
       fetchData()
       fetchTags()
       setUploadCategory('')
@@ -221,7 +366,7 @@ export default function KnowledgeManage() {
       const msg = err?.response?.data?.detail || err?.message || '导入失败'
       showToast(msg, 'error')
     }
-  }, [showToast, fetchData, uploadCategory, useUnlimitedOcr])
+  }, [showToast, fetchData, uploadCategory, useUnlimitedOcr, startChunkedImport])
 
   const cancelImport = useCallback(() => {
     setImportTask(null)
@@ -649,7 +794,7 @@ export default function KnowledgeManage() {
   // ===== Pagination =====
   useEffect(() => {
     setCurrentPage(1)
-  }, [debouncedSearch, categoryFilter, statusFilter])
+  }, [debouncedSearch, categoryFilter, statusFilter, selectedCourseId, selectedChapterId, selectedKpId])
 
   useEffect(() => {
     setSelectedIds(new Set())
@@ -701,7 +846,7 @@ export default function KnowledgeManage() {
           <UploadIcon />
         </div>
         <h3 style={S.uploadZoneH3}>点击或拖拽文件到此处上传</h3>
-        <p style={S.uploadZoneP}>支持 PDF/DOCX（100MB，超限自动拆分）、MD/TXT（5MB）、ZIP（MD+图片）</p>
+        <p style={S.uploadZoneP}>支持 PDF/DOCX（大文件自动分片上传+超限拆分）、MD/TXT（5MB）、ZIP（MD+图片）</p>
         <div style={S.uploadFormats}>
           <span style={S.formatTag}>PDF</span>
           <span style={S.formatTag}>DOCX</span>
@@ -736,7 +881,7 @@ export default function KnowledgeManage() {
           </div>
           <div style={S.importBarPct}>{Math.floor(importTask.progress)}%</div>
           <div style={S.importBarStatus(importTask.status)}>
-            {importTask.status === 'processing' ? '解析中' : importTask.status === 'completed' ? '完成' : '失败'}
+            {importTask.status === 'uploading' ? '上传中' : importTask.status === 'processing' ? '解析中' : importTask.status === 'completed' ? '完成' : '失败'}
           </div>
           <div
             style={S.importBarClose}
@@ -746,6 +891,52 @@ export default function KnowledgeManage() {
           >
             <CloseIcon />
           </div>
+        </div>
+      )}
+
+      {/* Education Cascade Filters */}
+      {courses.length > 0 && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <select
+            style={{ ...S.filterSelect, width: 160 }}
+            value={selectedCourseId}
+            onChange={(e) => handleCourseChange(e.target.value)}
+          >
+            <option value="">全部课程</option>
+            {courses.map(c => (
+              <option key={c.id} value={c.id}>{c.title}</option>
+            ))}
+          </select>
+          <select
+            style={{ ...S.filterSelect, width: 180 }}
+            value={selectedChapterId}
+            onChange={(e) => handleChapterChange(e.target.value)}
+            disabled={!selectedCourseId}
+          >
+            <option value="">全部章节</option>
+            {(() => {
+              const opts: React.ReactNode[] = []
+              const flatten = (nodes: ChapterTreeNode[], depth: number) => {
+                for (const n of nodes) {
+                  opts.push(<option key={n.id} value={n.id}>{'\u00A0\u00A0'.repeat(depth)}{n.title}</option>)
+                  flatten(n.children, depth + 1)
+                }
+              }
+              flatten(chapterTree, 0)
+              return opts
+            })()}
+          </select>
+          <select
+            style={{ ...S.filterSelect, width: 180 }}
+            value={selectedKpId}
+            onChange={(e) => handleKpChange(e.target.value)}
+            disabled={!selectedChapterId}
+          >
+            <option value="">全部知识点</option>
+            {knowledgePoints.map(kp => (
+              <option key={kp.id} value={kp.id}>{kp.title}</option>
+            ))}
+          </select>
         </div>
       )}
 

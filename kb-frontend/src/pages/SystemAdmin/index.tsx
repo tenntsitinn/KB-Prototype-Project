@@ -22,7 +22,7 @@ export default function SystemAdmin() {
   }
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: 24 }}>
+    <div style={{ flex: 1, overflow: 'auto', padding: 24, minHeight: 0 }}>
       <div style={tabBarStyle}>
         {tabs.map(t => (
           <button

@@ -5,8 +5,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_db, get_current_user, RequirePermission
-from app.core.permissions import UserPermissions, PERM_AI_ACCESS
+from app.core.dependencies import get_db, get_current_user
 from app.models.user import User
 from app.models.knowledge_unit import QAAccessLog
 from app.schemas.rag import AskRequest, AskResponse, SessionItem, SessionMessage
@@ -20,7 +19,6 @@ async def ask(
     req: AskRequest,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
-    _: UserPermissions = Depends(RequirePermission(PERM_AI_ACCESS)),
 ):
     """核心问答接口：支持流式和非流式两种模式"""
     result = await rag_service.ask(
@@ -30,6 +28,7 @@ async def ask(
         session_id=req.session_id,
         stream=req.stream,
         top_k=req.top_k,
+        chapter_id=req.chapter_id,
     )
 
     if req.stream:
@@ -49,7 +48,6 @@ async def ask(
 async def hot_questions(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
-    _: UserPermissions = Depends(RequirePermission(PERM_AI_ACCESS)),
 ):
     """热门问题：取最近 100 条问答记录，按提问频次取 top3；
     无高频问题时随机返回 3 条；无记录返回空列表。"""

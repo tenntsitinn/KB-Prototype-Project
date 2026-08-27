@@ -6,6 +6,7 @@ class AskRequest(BaseModel):
     session_id: str | None = Field(default=None, description="会话ID，用于多轮对话")
     stream: bool = Field(default=False, description="是否流式返回")
     top_k: int = Field(default=10, ge=1, le=50, description="期望返回的检索结果数量")
+    chapter_id: str | None = Field(default=None, description="限定检索范围的章节ID（递归含子孙）")
 
 
 class SourceInfo(BaseModel):

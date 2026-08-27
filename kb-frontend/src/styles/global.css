@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   --primary: #263238;
   --primary-hover: #37474F;
   --primary-active: #1B2327;
@@ -94,6 +94,7 @@ body {
 
 .toast.error { background: #FDECEA; color: var(--danger); border: 1px solid rgba(234, 67, 53, 0.2); }
 .toast.success { background: #E6F4EA; color: var(--success); border: 1px solid rgba(52, 168, 83, 0.2); }
+.toast.info { background: #E8F0FE; color: var(--primary, #1a73e8); border: 1px solid rgba(26, 115, 232, 0.2); }
 
 @keyframes slideDown {
   from { opacity: 0; transform: translateX(-50%) translateY(-12px); }

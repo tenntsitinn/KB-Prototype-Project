@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_db, RequirePermission
-from app.core.permissions import UserPermissions, PERM_KNOWLEDGE_READ, PERM_KNOWLEDGE_MANAGE
+from app.core.permissions import UserPermissions, PERM_KNOWLEDGE_MANAGE
 from app.schemas.tag import TagCreate, TagUpdate, TagOut
 from app.services import tag_service
 
@@ -12,7 +12,6 @@ router = APIRouter(prefix="/api/tags", tags=["tags"])
 @router.get("", response_model=list[TagOut])
 async def list_tags(
     db: AsyncSession = Depends(get_db),
-    _: UserPermissions = Depends(RequirePermission(PERM_KNOWLEDGE_READ)),
 ):
     """标签列表（知识查看权限即可读，供筛选/表单使用）"""
     tags = await tag_service.list_tags(db)

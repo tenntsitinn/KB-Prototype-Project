@@ -89,7 +89,7 @@ export default function Dashboard() {
   // ==================== Render ====================
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       {/* Header */}
       <div style={{
         height: 56, borderBottom: '1px solid var(--border)',
@@ -128,7 +128,7 @@ export default function Dashboard() {
       <div style={{
         flex: 1, overflow: 'auto', padding: windowWidth <= 768 ? 16 : 24,
         display: 'flex', flexDirection: 'column', gap: 24,
-        background: '#F5F6F8',
+        background: '#F5F6F8', minHeight: 0,
       }}>
         {/* Error State */}
         {error && !loading && (

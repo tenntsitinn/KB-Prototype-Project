@@ -28,14 +28,10 @@ interface DeptItem {
 }
 
 const PERMISSIONS = [
-  { key: 'knowledge:read', label: '知识查看' },
-  { key: 'knowledge:manage', label: '知识管理（编辑/删除/标签）' },
-  { key: 'knowledge:upload', label: '文件上传' },
+  { key: 'knowledge:manage', label: '知识管理（上传/编辑/删除/标签）' },
   { key: 'knowledge:manage_permissions', label: '数据权限管理' },
-  { key: 'faq:manage', label: 'FAQ 管理' },
   { key: 'gap:manage', label: '缺口分析' },
   { key: 'dashboard:view', label: '看板查看' },
-  { key: 'ai:access', label: 'AI 问答' },
   { key: 'quiz:manage', label: '题库管理' },
 ]
 

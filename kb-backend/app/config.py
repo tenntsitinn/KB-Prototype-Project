@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     # 运行环境: development | production
     APP_ENV: str = "development"
 
+    # 产品模式: education | personal
+    APP_MODE: str = "education"
+
     # PostgreSQL
     DATABASE_URL: str = "postgresql+asyncpg://kb_user:kb_pass@localhost:5432/knowledge_base"
 
@@ -25,6 +28,7 @@ class Settings(BaseSettings):
     MINIO_SECRET_KEY: str = _DEFAULT_MINIO_KEY
     MINIO_BUCKET_DOCS: str = "kb-documents"
     MINIO_SECURE: bool = False
+    MINIO_EXTERNAL_ENDPOINT: str = ""  # 浏览器可达地址（如 http://129.204.52.161:9000），空时回退 MINIO_ENDPOINT
 
     # Redis / Celery
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -42,8 +46,10 @@ class Settings(BaseSettings):
     DOCX_SPLIT_BUFFER: float = 3.0
 
     # Chunking
+    # overlap 曾设为 0 以缓解图片重复召回；现已在 RAG 层按 URL 去重并在答案侧
+    # 剥离复述引用（build_context.py / rag_service.py），边界召回收益恢复，故恢复重叠
     CHUNK_SIZE: int = 800
-    CHUNK_OVERLAP: int = 0
+    CHUNK_OVERLAP: int = 120
 
     # Embedding
     EMBEDDING_LOCAL: bool = False  # True=本地 sentence-transformers, False=远程 API
@@ -91,9 +97,19 @@ class Settings(BaseSettings):
     FAQ_MINING_THRESHOLD: int = 3
     FAQ_CACHE_COLLECTION: str = "faq_cache"
     FAQ_CACHE_THRESHOLD: float = 0.92
+    FAQ_CLUSTER_THRESHOLD: float = 0.88
 
     # 知识缺口
     GAP_SCORE_THRESHOLD: float = 0.5
+
+    # 知识点提取
+    POINT_REWRITE_INTERVAL: int = 20          # 每处理多少 chunk 触发一次批量重写落库
+    TOPIC_MATCH_THRESHOLD: float = 0.7        # topic 相似度 > 该值：自动合并进已有知识点
+    TOPIC_CANDIDATE_THRESHOLD: float = 0.5    # 介于两阈值之间：新建并记录合并候选，人工审核
+    MILVUS_TOPIC_COLLECTION: str = "knowledge_topics"
+
+    # 用户 API Key 加密密钥（留空时从 JWT_SECRET_KEY 派生）
+    ENCRYPTION_KEY: str = ""
 
     # JWT
     JWT_SECRET_KEY: str = _DEFAULT_JWT_SECRET

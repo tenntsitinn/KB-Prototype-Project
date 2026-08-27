@@ -5,29 +5,22 @@ from dataclasses import dataclass, field
 from app.models.user import User
 
 # ---- 权限码常量 ----
-PERM_KNOWLEDGE_READ = "knowledge:read"
 PERM_KNOWLEDGE_MANAGE = "knowledge:manage"
-PERM_KNOWLEDGE_UPLOAD = "knowledge:upload"
 PERM_KNOWLEDGE_MANAGE_PERMISSIONS = "knowledge:manage_permissions"
-PERM_FAQ_MANAGE = "faq:manage"
 PERM_GAP_MANAGE = "gap:manage"
 PERM_DASHBOARD_VIEW = "dashboard:view"
-PERM_AI_ACCESS = "ai:access"
 PERM_QUIZ_MANAGE = "quiz:manage"
 
 # 仅超级管理员拥有的权限（不进入角色可配置列表）
 PERM_PERMISSION_MANAGE = "permission:manage"
 
 # 角色可配置权限列表（不包含 permission:manage）
+# knowledge:read 和 ai:access 对所有登录用户默认开放，无需配置
 ALL_PERMISSIONS = [
-    PERM_KNOWLEDGE_READ,
     PERM_KNOWLEDGE_MANAGE,
-    PERM_KNOWLEDGE_UPLOAD,
     PERM_KNOWLEDGE_MANAGE_PERMISSIONS,
-    PERM_FAQ_MANAGE,
     PERM_GAP_MANAGE,
     PERM_DASHBOARD_VIEW,
-    PERM_AI_ACCESS,
     PERM_QUIZ_MANAGE,
 ]
 

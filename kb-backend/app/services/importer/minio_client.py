@@ -5,6 +5,7 @@ from minio.error import S3Error
 from app.config import settings
 
 _client: Minio | None = None
+_presign_client: Minio | None = None
 
 
 def _get_client() -> Minio:
@@ -17,6 +18,26 @@ def _get_client() -> Minio:
             secure=settings.MINIO_SECURE,
         )
     return _client
+
+
+def _get_presign_client() -> Minio:
+    global _presign_client
+    if _presign_client is None:
+        endpoint = settings.MINIO_EXTERNAL_ENDPOINT or settings.MINIO_ENDPOINT
+        secure = settings.MINIO_SECURE
+        if endpoint.startswith("https://"):
+            secure = True
+            endpoint = endpoint[len("https://"):]
+        elif endpoint.startswith("http://"):
+            secure = False
+            endpoint = endpoint[len("http://"):]
+        _presign_client = Minio(
+            endpoint=endpoint,
+            access_key=settings.MINIO_ACCESS_KEY,
+            secret_key=settings.MINIO_SECRET_KEY,
+            secure=secure,
+        )
+    return _presign_client
 
 
 def _ensure_bucket(bucket: str) -> None:
@@ -91,7 +112,27 @@ def delete_prefix(bucket: str, prefix: str) -> int:
     return len(names)
 
 
-def get_presigned_url(bucket: str, object_name: str, expires_days: int = 7) -> str:
-    """生成预签名 URL，用于外部访问 MinIO 对象"""
-    client = _get_client()
-    return client.presigned_get_object(bucket, object_name, expires=timedelta(days=expires_days))
+def get_presigned_url(
+    bucket: str,
+    object_name: str,
+    expires_seconds: int = 600,
+    content_disposition: str = "",
+    content_type: str = "",
+) -> str:
+    """生成预签名 URL，用于浏览器直连 MinIO 访问。
+
+    使用 MINIO_EXTERNAL_ENDPOINT 生成浏览器可达的 URL。
+    可通过 content_disposition / content_type 控制 MinIO 返回的响应头。
+    """
+    client = _get_presign_client()
+    headers = {}
+    if content_disposition:
+        headers["response-content-disposition"] = content_disposition
+    if content_type:
+        headers["response-content-type"] = content_type
+    return client.presigned_get_object(
+        bucket,
+        object_name,
+        expires=timedelta(seconds=expires_seconds),
+        response_headers=headers if headers else None,
+    )

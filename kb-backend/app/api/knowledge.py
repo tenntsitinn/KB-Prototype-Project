@@ -14,8 +14,8 @@ import time
 from app.config import settings
 from app.core.dependencies import get_db, get_current_user, get_current_permissions, get_current_permissions_optional, RequirePermission
 from app.core.permissions import (
-    UserPermissions, PERM_KNOWLEDGE_READ, PERM_KNOWLEDGE_MANAGE,
-    PERM_KNOWLEDGE_UPLOAD, PERM_KNOWLEDGE_MANAGE_PERMISSIONS,
+    UserPermissions, PERM_KNOWLEDGE_MANAGE,
+    PERM_KNOWLEDGE_MANAGE_PERMISSIONS,
 )
 from app.models.user import User
 from app.models.knowledge_unit import KnowledgeUnit
@@ -134,7 +134,7 @@ async def import_document(
     use_unlimited_ocr: bool = Form(default=False),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
-    _: UserPermissions = Depends(RequirePermission(PERM_KNOWLEDGE_UPLOAD)),
+    _: UserPermissions = Depends(RequirePermission(PERM_KNOWLEDGE_MANAGE)),
 ):
     """单文件导入接口，支持 .md / .pdf / .docx / .txt / .zip"""
     filename = file.filename or "unknown"
@@ -198,7 +198,7 @@ async def batch_import_documents(
     creator_id: str = Form(default="system"),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
-    _: UserPermissions = Depends(RequirePermission(PERM_KNOWLEDGE_UPLOAD)),
+    _: UserPermissions = Depends(RequirePermission(PERM_KNOWLEDGE_MANAGE)),
 ):
     """批量文件导入接口：支持多文件并发上传，返回每个文件的导入结果"""
     os.makedirs(settings.UPLOAD_TEMP_DIR, exist_ok=True)
@@ -238,6 +238,145 @@ async def get_import_status(task_id: str):
 
 
 # ---------------------------------------------------------------------------
+# 大文件分片上传
+# ---------------------------------------------------------------------------
+
+CHUNK_SIZE = 5 * 1024 * 1024  # 5MB per chunk
+CHUNK_THRESHOLD = 10 * 1024 * 1024  # 文件 > 10MB 时使用分片上传
+
+
+def _chunk_dir(upload_id: str) -> str:
+    """安全构造分片存储目录，防止路径遍历"""
+    safe_id = upload_id.replace("/", "").replace("\\", "").replace("..", "")
+    return os.path.join(settings.UPLOAD_TEMP_DIR, "chunks", safe_id)
+
+
+@router.post("/upload/chunk")
+async def upload_chunk(
+    upload_id: str = Form(...),
+    chunk_index: int = Form(...),
+    total_chunks: int = Form(...),
+    chunk: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    _: UserPermissions = Depends(RequirePermission(PERM_KNOWLEDGE_MANAGE)),
+):
+    """上传单个分片"""
+    chunk_dir = _chunk_dir(upload_id)
+    os.makedirs(chunk_dir, exist_ok=True)
+
+    chunk_path = os.path.join(chunk_dir, f"chunk_{chunk_index:05d}")
+    with open(chunk_path, "wb") as f:
+        shutil.copyfileobj(chunk.file, f)
+
+    uploaded = len(os.listdir(chunk_dir))
+    return {
+        "upload_id": upload_id,
+        "chunk_index": chunk_index,
+        "uploaded": uploaded,
+        "total_chunks": total_chunks,
+    }
+
+
+@router.get("/upload/chunks")
+async def check_uploaded_chunks(
+    upload_id: str = Query(...),
+    user: User = Depends(get_current_user),
+    _: UserPermissions = Depends(RequirePermission(PERM_KNOWLEDGE_MANAGE)),
+):
+    """查询已上传的分片索引列表（用于断点续传）"""
+    chunk_dir = _chunk_dir(upload_id)
+    if not os.path.exists(chunk_dir):
+        return {"upload_id": upload_id, "uploaded": []}
+
+    indices = []
+    for name in os.listdir(chunk_dir):
+        if name.startswith("chunk_"):
+            try:
+                indices.append(int(name[6:]))
+            except ValueError:
+                pass
+    return {"upload_id": upload_id, "uploaded": sorted(indices)}
+
+
+@router.post("/upload/merge", response_model=ImportResponse)
+async def merge_chunks(
+    upload_id: str = Form(...),
+    filename: str = Form(...),
+    total_chunks: int = Form(...),
+    creator_id: str = Form(default="system"),
+    category: str = Form(default=""),
+    use_unlimited_ocr: bool = Form(default=False),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+    _: UserPermissions = Depends(RequirePermission(PERM_KNOWLEDGE_MANAGE)),
+):
+    """合并所有分片为完整文件，然后走正常导入流程"""
+    chunk_dir = _chunk_dir(upload_id)
+    if not os.path.exists(chunk_dir):
+        raise HTTPException(status_code=404, detail="上传会话不存在或已过期")
+
+    existing_chunks = len(os.listdir(chunk_dir))
+    if existing_chunks != total_chunks:
+        raise HTTPException(
+            status_code=400,
+            detail=f"分片不完整: {existing_chunks}/{total_chunks}",
+        )
+
+    file_type = get_file_type(filename)
+    if file_type == "unknown":
+        shutil.rmtree(chunk_dir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail=f"不支持的文件格式: {filename}")
+
+    category = category.strip()
+    if len(category) > 50:
+        shutil.rmtree(chunk_dir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail="分类名过长（最多 50 字符）")
+
+    if category:
+        from app.services import tag_service
+        await tag_service.ensure_tag(db, category)
+
+    os.makedirs(settings.UPLOAD_TEMP_DIR, exist_ok=True)
+    merged_path = os.path.join(settings.UPLOAD_TEMP_DIR, filename)
+    try:
+        with open(merged_path, "wb") as f:
+            for i in range(total_chunks):
+                chunk_path = os.path.join(chunk_dir, f"chunk_{i:05d}")
+                if not os.path.exists(chunk_path):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"分片 {i} 缺失",
+                    )
+                with open(chunk_path, "rb") as chunk_file:
+                    shutil.copyfileobj(chunk_file, f)
+    finally:
+        shutil.rmtree(chunk_dir, ignore_errors=True)
+
+    valid, err = validate_file_size(merged_path, file_type)
+    if not valid and file_type not in ("pdf", "docx"):
+        os.remove(merged_path)
+        raise HTTPException(status_code=400, detail=err)
+
+    md5_hash = compute_md5(merged_path)
+    existing = await check_duplicate(db, md5_hash)
+    if existing:
+        os.remove(merged_path)
+        raise HTTPException(status_code=409, detail=f"文件已存在（MD5: {md5_hash[:8]}...）")
+
+    from app.tasks.import_task import process_document
+    task = process_document.delay(
+        merged_path, filename, creator_id,
+        category=category, use_unlimited_ocr=use_unlimited_ocr,
+    )
+
+    return ImportResponse(
+        task_id=task.id,
+        unit_id="pending",
+        status="pending",
+    )
+
+
+# ---------------------------------------------------------------------------
 # 知识单元 CRUD
 # ---------------------------------------------------------------------------
 
@@ -246,13 +385,14 @@ async def list_units(
     title: str | None = None,
     category: str | None = None,
     status: str | None = None,
+    course_id: str | None = None,
+    chapter_id: str | None = None,
     offset: int = 0,
     limit: int = 20,
     db: AsyncSession = Depends(get_db),
-    _: UserPermissions = Depends(RequirePermission(PERM_KNOWLEDGE_READ)),
 ):
     """分页查询知识单元列表"""
-    units, total = await list_knowledge_units(db, title, category, status, offset, limit)
+    units, total = await list_knowledge_units(db, title, category, status, offset, limit, course_id, chapter_id)
     return {
         "total": total,
         "items": [
@@ -279,7 +419,6 @@ async def list_units(
 async def get_unit(
     unit_id: str,
     db: AsyncSession = Depends(get_db),
-    _: UserPermissions = Depends(RequirePermission(PERM_KNOWLEDGE_READ)),
 ):
     """查询知识单元详情（含数据权限列表）"""
     unit = await get_knowledge_unit(db, unit_id)
@@ -314,6 +453,7 @@ async def get_unit(
 # ---------------------------------------------------------------------------
 
 _FILE_TOKEN_TTL = 300  # 签名有效期（秒）
+_PRESIGN_TTL = 600  # 预签名 URL 有效期（秒）
 
 
 def _sign_unit_file(unit_id: str, expires: int) -> str:
@@ -336,18 +476,31 @@ def _verify_unit_file_token(unit_id: str, st: str) -> bool:
 async def get_unit_file_url(
     unit_id: str,
     db: AsyncSession = Depends(get_db),
-    _: UserPermissions = Depends(RequirePermission(PERM_KNOWLEDGE_READ)),
 ):
-    """签发原文档的短时访问 URL（5 分钟有效，期间可免登录访问）"""
+    """签发原文档的短时访问 URL（预签名直连 MinIO，10 分钟有效）"""
+    import mimetypes
+    from app.services.importer.minio_client import get_presigned_url
+
     unit = await get_knowledge_unit(db, unit_id)
     if not unit:
         raise HTTPException(status_code=404, detail="知识单元不存在")
     if not unit.minio_path:
         raise HTTPException(status_code=404, detail="原始文档不存在")
 
-    expires = int(time.time()) + _FILE_TOKEN_TTL
-    st = f"{expires}.{_sign_unit_file(unit_id, expires)}"
-    return {"url": f"/api/knowledge/units/{unit_id}/file?st={st}", "expires_in": _FILE_TOKEN_TTL}
+    filename = unit.source_file_name or os.path.basename(unit.minio_path)
+    mime_type, _ = mimetypes.guess_type(filename)
+    media_type = mime_type or "application/octet-stream"
+    inline_types = {"application/pdf", "text/markdown", "text/plain"}
+    disposition = "inline" if media_type in inline_types else "attachment"
+
+    url = get_presigned_url(
+        settings.MINIO_BUCKET_DOCS,
+        unit.minio_path,
+        expires_seconds=_PRESIGN_TTL,
+        content_disposition=f"{disposition}; filename*=UTF-8''{quote(filename)}",
+        content_type=media_type,
+    )
+    return {"url": url, "expires_in": _PRESIGN_TTL}
 
 
 @router.get("/units/{unit_id}/file")
@@ -359,14 +512,14 @@ async def get_unit_file(
 ):
     """下载/预览知识单元的原始文档。
 
-    两种访问方式：带 Authorization 头走正常鉴权（需 knowledge:read）；
+    两种访问方式：带 Authorization 头走正常鉴权（所有登录用户可访问）；
     或带有效签名参数 st（由 file-url 接口签发，5 分钟内有效）。
     """
     if st:
         if not _verify_unit_file_token(unit_id, st):
             raise HTTPException(status_code=401, detail="签名无效或已过期")
     else:
-        if perms is None or not perms.has_any(PERM_KNOWLEDGE_READ):
+        if perms is None:
             raise HTTPException(status_code=403, detail="权限不足")
 
     import mimetypes
@@ -438,7 +591,7 @@ async def retry_vectorize(
     unit_id: str,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
-    _: UserPermissions = Depends(RequirePermission(PERM_KNOWLEDGE_UPLOAD)),
+    _: UserPermissions = Depends(RequirePermission(PERM_KNOWLEDGE_MANAGE)),
 ):
     """断点续跑：对向量化失败（草稿状态）的单元重新向量化，已成功的 chunk 不重做"""
     unit = await db.get(KnowledgeUnit, unit_id)

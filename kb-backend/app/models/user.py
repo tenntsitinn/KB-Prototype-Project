@@ -21,6 +21,8 @@ class User(Base):
     status: Mapped[str] = mapped_column(String(16), default="active")
     is_superuser: Mapped[bool] = mapped_column(Boolean, default=False)
     llm_api_key: Mapped[str] = mapped_column(String(256), default="")
+    llm_base_url: Mapped[str] = mapped_column(String(128), default="")
+    llm_model: Mapped[str] = mapped_column(String(64), default="")
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

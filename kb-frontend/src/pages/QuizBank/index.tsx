@@ -1,13 +1,16 @@
 import { useState, useEffect, useCallback } from 'react'
 import api from '../../services/api'
-import { SOURCE_MAP, type BankQuestion } from './model'
+import { SOURCE_MAP, STATUS_MAP, type BankQuestion, type PointTag } from './model'
+import CategoryCascade, { PointPicker, emptyCategory, type CategoryValue } from '../../components/CategoryCascade'
+import QuestionDetailModal, { fmtDate, statusBadgeStyle } from '../../components/QuestionDetailModal'
 
-const thStyle: React.CSSProperties = { padding: '10px 14px', textAlign: 'left', fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }
-const tdStyle: React.CSSProperties = { padding: '10px 14px', fontSize: 14, borderBottom: '1px solid var(--border-light)', verticalAlign: 'top' }
-const inputStyle: React.CSSProperties = {
-  padding: '8px 12px', fontSize: 13, borderRadius: 8,
-  border: '1px solid var(--border)', background: 'var(--bg-card)',
-  color: 'var(--text)', fontFamily: 'var(--font)', outline: 'none',
+const thStyle: React.CSSProperties = { padding: '10px 14px', textAlign: 'left', fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }
+const tdStyle: React.CSSProperties = { padding: '10px 14px', fontSize: 14, borderBottom: '1px solid var(--border-light)', verticalAlign: 'top', whiteSpace: 'nowrap' }
+const selectStyle: React.CSSProperties = { padding: '8px 12px', fontSize: 13, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text)', cursor: 'pointer' }
+
+const tagChipStyle: React.CSSProperties = {
+  fontSize: 11, padding: '1px 8px', borderRadius: 999,
+  background: 'var(--primary-light)', color: 'var(--primary)', fontWeight: 500,
 }
 
 export default function QuizBank() {
@@ -16,14 +19,17 @@ export default function QuizBank() {
   const [loading, setLoading] = useState(true)
   const [keyword, setKeyword] = useState('')
   const [searchInput, setSearchInput] = useState('')
-  const [tags, setTags] = useState<{id: string; name: string}[]>([])
-  const [categoryFilter, setCategoryFilter] = useState('')
+  const [category, setCategory] = useState<CategoryValue>(emptyCategory)
+  const [sourceFilter, setSourceFilter] = useState('')
+  const [reviewStatus, setReviewStatus] = useState('pending')
   const [page, setPage] = useState(0)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [batchWorking, setBatchWorking] = useState(false)
+  const [detail, setDetail] = useState<BankQuestion | null>(null)
   const [editing, setEditing] = useState<BankQuestion | null>(null)
   const [editQuestion, setEditQuestion] = useState('')
   const [editAnswer, setEditAnswer] = useState('')
+  const [editPoints, setEditPoints] = useState<PointTag[]>([])
   const [toast, setToast] = useState({ msg: '', type: '' })
 
   const PAGE_SIZE = 20
@@ -38,7 +44,12 @@ export default function QuizBank() {
     try {
       const res = await api.get('/api/quiz/bank', {
         params: {
-          status: 'pending_review', category: categoryFilter, keyword,
+          review_status: reviewStatus,
+          source_type: sourceFilter,
+          course_id: category.courseId,
+          chapter_id: category.chapterId,
+          point_id: category.pointId,
+          keyword,
           offset: page * PAGE_SIZE, limit: PAGE_SIZE,
         },
       })
@@ -46,16 +57,11 @@ export default function QuizBank() {
       setTotal(res.data?.total || 0)
     } catch { showToast('加载题库失败', 'error') }
     finally { setLoading(false) }
-  }, [categoryFilter, keyword, page])
+  }, [reviewStatus, sourceFilter, category, keyword, page])
 
   useEffect(() => { fetchQuestions() }, [fetchQuestions])
-  useEffect(() => {
-    api.get('/api/tags').then((res) => {
-      const list = Array.isArray(res.data) ? res.data : res.data?.data || []
-      setTags(list)
-    }).catch(() => {})
-  }, [])
-  useEffect(() => { setPage(0); setSelected(new Set()) }, [categoryFilter, keyword])
+  useEffect(() => { setPage(0); setSelected(new Set()) }, [reviewStatus, sourceFilter, category, keyword])
+  useEffect(() => { setSelected(new Set()) }, [page])
 
   const toggleAll = useCallback((checked: boolean) => {
     setSelected(checked ? new Set(questions.map((q) => q.id)) : new Set())
@@ -75,6 +81,7 @@ export default function QuizBank() {
       await api.post(`/api/quiz/bank/${id}/review`, { action })
       showToast(action === 'approve' ? '已发布' : action === 'reject' ? '已驳回' : '已下架', 'success')
       setSelected((prev) => { const n = new Set(prev); n.delete(id); return n })
+      setDetail(null)
       fetchQuestions()
     } catch { showToast('操作失败', 'error') }
   }, [fetchQuestions])
@@ -116,31 +123,27 @@ export default function QuizBank() {
       await api.delete(`/api/quiz/bank/${id}`)
       showToast('已删除', 'success')
       setSelected((prev) => { const n = new Set(prev); n.delete(id); return n })
+      setDetail(null)
       fetchQuestions()
     } catch { showToast('删除失败', 'error') }
   }, [fetchQuestions])
 
-  const openSource = useCallback(async (unitId: string) => {
-    const win = window.open('about:blank', '_blank')
-    try {
-      const res = await api.get(`/api/knowledge/units/${unitId}/file-url`)
-      const url: string = res.data?.url
-      if (!url) throw new Error('no url')
-      if (win) win.location.href = url
-      else window.open(url, '_blank')
-    } catch {
-      win?.close()
-      showToast('原文档加载失败', 'error')
-    }
-  }, [])
-
   const mine = useCallback(async () => {
     try {
       const res = await api.post('/api/quiz/bank/mine', { limit: 20 })
-      showToast(`从问答日志挖掘到 ${res.data?.new_count || 0} 道候选题`, 'success')
+      const n = res.data?.new_count || 0
+      const t = res.data?.tagged_count || 0
+      showToast(n === 0 ? '没有新的可挖掘提问' : `挖掘到 ${n} 道候选题，其中 ${t} 道已自动挂知识点标签`, 'success')
       fetchQuestions()
     } catch { showToast('挖掘失败', 'error') }
   }, [fetchQuestions])
+
+  const openEdit = (q: BankQuestion) => {
+    setEditing(q)
+    setEditQuestion(q.question)
+    setEditAnswer(q.reference_answer)
+    setEditPoints(q.points || [])
+  }
 
   const saveEdit = useCallback(async () => {
     if (!editing) return
@@ -149,45 +152,46 @@ export default function QuizBank() {
         action: 'edit',
         question: editQuestion,
         reference_answer: editAnswer,
+        point_ids: editPoints.map((p) => p.id),
       })
       showToast('已保存', 'success')
       setEditing(null)
       fetchQuestions()
     } catch { showToast('保存失败', 'error') }
-  }, [editing, editQuestion, editAnswer, fetchQuestions])
+  }, [editing, editQuestion, editAnswer, editPoints, fetchQuestions])
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const allChecked = questions.length > 0 && questions.every((q) => selected.has(q.id))
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: 24 }}>
+    <div style={{ flex: 1, overflow: 'auto', padding: 24, minHeight: 0 }}>
       {/* Toolbar */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center' }}>
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 6, padding: '2px 12px',
-          borderRadius: 999, background: 'var(--primary-light)', color: 'var(--primary)',
-          fontSize: 12, fontWeight: 500, flexShrink: 0,
-        }}>
-          待审核 {total}
-        </div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center', flexWrap: 'wrap' }}>
         <input
           value={searchInput}
           onChange={(e) => setSearchInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') { setKeyword(searchInput.trim()); setPage(0) } }}
-          placeholder="搜索题目关键词，回车确认"
-          style={{ ...inputStyle, width: 240 }}
+          onKeyDown={(e) => { if (e.key === 'Enter') setKeyword(searchInput.trim()) }}
+          placeholder="搜索题目/答案关键词，回车确认"
+          style={{
+            padding: '8px 12px', fontSize: 13, borderRadius: 8, border: '1px solid var(--border)',
+            background: 'var(--bg-card)', color: 'var(--text)', fontFamily: 'var(--font)', outline: 'none', width: 240,
+          }}
         />
-        <select
-          value={categoryFilter}
-          onChange={(e) => setCategoryFilter(e.target.value)}
-          style={{ padding: '8px 12px', fontSize: 13, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text)', cursor: 'pointer' }}
-        >
-          <option value="">全部分类</option>
-          {tags.map((t) => (
-            <option key={t.id} value={t.name}>{t.name}</option>
-          ))}
+        <CategoryCascade value={category} onChange={setCategory} />
+        <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)} style={selectStyle}>
+          <option value="">全部来源</option>
+          <option value="ai_generated">AI 出题</option>
+          <option value="user_question">用户提问</option>
+          <option value="auto_mined">问答挖掘</option>
+          <option value="manual">手工录入</option>
+        </select>
+        <select value={reviewStatus} onChange={(e) => setReviewStatus(e.target.value)} style={selectStyle}>
+          <option value="">全部审核状态</option>
+          <option value="reviewed">已审核</option>
+          <option value="pending">待审核</option>
         </select>
         <div style={{ flex: 1 }} />
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>共 {total} 题</span>
         <button className="btn btn-outline" onClick={mine}>从问答日志挖掘候选题</button>
       </div>
 
@@ -212,61 +216,67 @@ export default function QuizBank() {
 
       {/* Table */}
       <div style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
           <thead><tr style={{ background: 'var(--bg-card)' }}>
-            <th style={{ ...thStyle, width: 40, textAlign: 'center' }}>
+            <th style={{ ...thStyle, width: 36, textAlign: 'center' }}>
               <input type="checkbox" checked={allChecked} onChange={(e) => toggleAll(e.target.checked)} />
             </th>
-            <th style={thStyle}>题目</th>
-            <th style={{ ...thStyle, width: 90 }}>来源</th>
-            <th style={{ ...thStyle, width: 110 }}>提交时间</th>
-            <th style={{ ...thStyle, width: 200 }}>操作</th>
+            <th style={{ ...thStyle, width: 46, textAlign: 'center' }}>序号</th>
+            <th style={{ ...thStyle, width: 'auto' }}>题目</th>
+            <th style={{ ...thStyle, width: 60 }}>分类</th>
+            <th style={{ ...thStyle, width: 72 }}>来源</th>
+            <th style={{ ...thStyle, width: 70 }}>状态</th>
+            <th style={{ ...thStyle, width: 46, textAlign: 'center' }}>使用</th>
+            <th style={{ ...thStyle, width: 84 }}>创建时间</th>
+            <th style={{ ...thStyle, width: 196 }}>操作</th>
           </tr></thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={5} style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>加载中...</td></tr>
+              <tr><td colSpan={9} style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>加载中...</td></tr>
             ) : questions.length === 0 ? (
-              <tr><td colSpan={5} style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>
-                暂无待审核题目。用户在「智能出题」中作答产生的题目会自动进入待审核列表；也可点击右上角从问答日志挖掘。
+              <tr><td colSpan={9} style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>
+                暂无符合条件的题目。用户在「智能出题」中作答产生的题目会自动进入待审核列表；也可点击右上角从问答日志挖掘。
               </td></tr>
-            ) : questions.map((q) => (
+            ) : questions.map((q, idx) => (
               <tr key={q.id} style={{ background: selected.has(q.id) ? 'var(--primary-light)' : 'transparent' }}>
                 <td style={{ ...tdStyle, textAlign: 'center' }}>
                   <input type="checkbox" checked={selected.has(q.id)} onChange={(e) => toggleOne(q.id, e.target.checked)} />
                 </td>
+                <td style={{ ...tdStyle, textAlign: 'center' }}>
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{page * PAGE_SIZE + idx + 1}</span>
+                </td>
                 <td style={tdStyle}>
-                  <div style={{ fontSize: 14, color: 'var(--text)', lineHeight: 1.5, marginBottom: 4 }}>{q.question}</div>
-                  {q.reference_answer && (
-                    <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                      参考答案：{q.reference_answer.slice(0, 80)}{q.reference_answer.length > 80 ? '…' : ''}
+                  <div
+                    onClick={() => setDetail(q)}
+                    title={q.question}
+                    style={{ fontSize: 14, color: 'var(--text)', lineHeight: 1.5, cursor: 'pointer', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                    onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--primary)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text)')}
+                  >
+                    {q.question}
+                  </div>
+                  {q.points.length > 0 && (
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
+                      {q.points.slice(0, 3).map((p) => (
+                        <span key={p.id} style={tagChipStyle}>{p.title.length > 12 ? `${p.title.slice(0, 12)}…` : p.title}</span>
+                      ))}
+                      {q.points.length > 3 && (
+                        <span style={{ fontSize: 11, color: 'var(--text-muted)', alignSelf: 'center' }}>+{q.points.length - 3}</span>
+                      )}
                     </div>
                   )}
-                  {q.source_unit_id && (
-                    <a href="#" onClick={(e) => { e.preventDefault(); openSource(q.source_unit_id) }} style={{ fontSize: 12, color: 'var(--primary)' }}>
-                      查看来源文档
-                    </a>
-                  )}
                 </td>
-                <td style={tdStyle}>
-                  <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{SOURCE_MAP[q.source_type] || q.source_type}</span>
-                </td>
-                <td style={tdStyle}>
-                  <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                    {q.created_at ? new Date(q.created_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-'}
-                  </span>
-                </td>
-                <td style={tdStyle}>
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    <button className="btn btn-primary" style={{ fontSize: 12, padding: '4px 10px' }} onClick={() => review(q.id, 'approve')}>通过</button>
-                    <button className="btn btn-danger" style={{ fontSize: 12, padding: '4px 10px' }} onClick={() => review(q.id, 'reject')}>驳回</button>
-                    <button
-                      className="btn btn-ghost"
-                      style={{ fontSize: 12, padding: '4px 10px' }}
-                      onClick={() => { setEditing(q); setEditQuestion(q.question); setEditAnswer(q.reference_answer) }}
-                    >
-                      编辑
-                    </button>
-                    <button className="btn btn-danger" style={{ fontSize: 12, padding: '4px 10px' }} onClick={() => deleteQuestion(q.id)}>删除</button>
+                <td style={tdStyle}><span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{q.category || '-'}</span></td>
+                <td style={tdStyle}><span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{SOURCE_MAP[q.source_type] || q.source_type}</span></td>
+                <td style={tdStyle}><span style={statusBadgeStyle(q.status)}>{STATUS_MAP[q.status] || q.status}</span></td>
+                <td style={{ ...tdStyle, textAlign: 'center' }}><span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{q.usage_count}</span></td>
+                <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}><span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{fmtDate(q.created_at)}</span></td>
+                <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'nowrap' }}>
+                    <button className="btn btn-primary" style={{ fontSize: 12, padding: '4px 6px', flexShrink: 0 }} onClick={() => review(q.id, 'approve')}>通过</button>
+                    <button className="btn btn-danger" style={{ fontSize: 12, padding: '4px 6px', flexShrink: 0 }} onClick={() => review(q.id, 'reject')}>驳回</button>
+                    <button className="btn btn-danger" style={{ fontSize: 12, padding: '4px 6px', flexShrink: 0 }} onClick={() => openEdit(q)}>编辑</button>
+                    <button className="btn btn-danger" style={{ fontSize: 12, padding: '4px 6px', flexShrink: 0 }} onClick={() => deleteQuestion(q.id)}>删除</button>
                   </div>
                 </td>
               </tr>
@@ -282,6 +292,11 @@ export default function QuizBank() {
           <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>{page + 1} / {totalPages}</span>
           <button className="btn btn-ghost" disabled={page >= totalPages - 1} onClick={() => setPage(page + 1)}>下一页</button>
         </div>
+      )}
+
+      {/* Detail Modal (read-only) */}
+      {detail && (
+        <QuestionDetailModal question={detail} onClose={() => setDetail(null)} onError={(m) => showToast(m, 'error')} />
       )}
 
       {/* Edit Modal */}
@@ -305,8 +320,30 @@ export default function QuizBank() {
             <textarea
               value={editAnswer}
               onChange={(e) => setEditAnswer(e.target.value)}
-              style={{ width: '100%', minHeight: 120, padding: '10px 12px', fontSize: 14, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', fontFamily: 'var(--font)', marginBottom: 20, boxSizing: 'border-box', resize: 'vertical', lineHeight: 1.6 }}
+              style={{ width: '100%', minHeight: 120, padding: '10px 12px', fontSize: 14, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', fontFamily: 'var(--font)', marginBottom: 16, boxSizing: 'border-box', resize: 'vertical', lineHeight: 1.6 }}
             />
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>关联知识点（可选多个）</div>
+            {editPoints.length > 0 && (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+                {editPoints.map((p) => (
+                  <span key={p.id} style={{ ...tagChipStyle, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 8px' }}>
+                    {p.title}
+                    <span
+                      onClick={() => setEditPoints((prev) => prev.filter((x) => x.id !== p.id))}
+                      style={{ cursor: 'pointer', fontWeight: 700, lineHeight: 1, fontSize: 12 }}
+                      title="移除"
+                    >
+                      ×
+                    </span>
+                  </span>
+                ))}
+              </div>
+            )}
+            <div style={{ marginBottom: 20 }}>
+              <PointPicker onPick={(p) => {
+                setEditPoints((prev) => prev.some((x) => x.id === p.id) ? prev : [...prev, p])
+              }} />
+            </div>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button className="btn btn-ghost" onClick={() => setEditing(null)}>取消</button>
               <button className="btn btn-primary" onClick={saveEdit}>保存</button>

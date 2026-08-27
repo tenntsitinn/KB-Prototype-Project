@@ -9,7 +9,6 @@ from celery import Celery
 from app.config import settings
 from app.core.database import AsyncSessionLocal
 from app.services.importer.knowledge_service import cleanup_soft_deleted
-from app.services.importer.minio_client import delete_file
 
 celery_app = Celery("kb_cleanup", broker=settings.REDIS_URL, backend=settings.REDIS_URL)
 
@@ -21,19 +20,13 @@ def _run_async(coro):
 
 @celery_app.task(name="cleanup.soft_deleted")
 def cleanup_soft_deleted_documents() -> dict:
-    """清理超过 SOFT_DELETE_DAYS 天的软删除记录，返回清理数量"""
+    """清理超过 SOFT_DELETE_DAYS 天的软删除记录，返回清理数量
 
+    MinIO 文件和 Milvus 向量的清理已由 cleanup_soft_deleted 内部完成。
+    """
     async def _cleanup():
         async with AsyncSessionLocal() as db:
             unit_ids = await cleanup_soft_deleted(db, days=settings.SOFT_DELETE_DAYS)
-
-            # 清理 MinIO 中的对应文件
-            for uid in unit_ids:
-                try:
-                    delete_file(settings.MINIO_BUCKET_DOCS, f"{uid}/")
-                except Exception:
-                    pass
-
             return {"deleted_count": len(unit_ids), "deleted_ids": unit_ids}
 
     return _run_async(_cleanup())

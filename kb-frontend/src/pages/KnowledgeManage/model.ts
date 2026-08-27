@@ -44,7 +44,25 @@ export interface ImportTask {
   fileName: string
   fileSize: number
   progress: number
-  status: 'processing' | 'completed' | 'failed'
+  status: 'uploading' | 'processing' | 'completed' | 'failed'
+}
+
+export interface Course {
+  id: string
+  title: string
+  description: string
+}
+
+export interface ChapterTreeNode {
+  id: string
+  title: string
+  children: ChapterTreeNode[]
+}
+
+export interface KnowledgePointOption {
+  id: string
+  title: string
+  unit_id: string
 }
 
 // ===== Constants =====

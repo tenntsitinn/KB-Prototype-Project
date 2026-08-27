@@ -1,3 +1,8 @@
+export interface PointTag {
+  id: string
+  title: string
+}
+
 export interface BankQuestion {
   id: string
   question: string
@@ -11,6 +16,7 @@ export interface BankQuestion {
   reviewer_name: string
   reviewed_at: string | null
   created_at: string
+  points: PointTag[]
 }
 
 export interface Tag {
@@ -29,4 +35,6 @@ export const STATUS_MAP: Record<string, string> = {
 export const SOURCE_MAP: Record<string, string> = {
   ai_generated: 'AI 出题',
   user_question: '用户提问',
+  auto_mined: '问答挖掘',
+  manual: '手工录入',
 }

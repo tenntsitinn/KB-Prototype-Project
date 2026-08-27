@@ -1,9 +1,10 @@
-import { useState, useRef, useEffect, KeyboardEvent } from 'react'
+import { useState, useRef, useEffect, useCallback, KeyboardEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import { useAuthStore } from '../../stores/authStore'
+import api from '../../services/api'
 
 interface Message {
   id: string
@@ -14,6 +15,9 @@ interface Message {
   faqHit?: boolean
   streaming?: boolean
 }
+
+interface Course { id: string; title: string }
+interface ChapterTreeNode { id: string; title: string; children: ChapterTreeNode[] }
 
 const fallbackSuggestions = [
   '支持导入哪些文件格式？',
@@ -31,19 +35,51 @@ export default function SearchQA() {
   const chatRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
+  // Scope filter state
+  const [courses, setCourses] = useState<Course[]>([])
+  const [selectedCourseId, setSelectedCourseId] = useState('')
+  const [chapterTree, setChapterTree] = useState<ChapterTreeNode[]>([])
+  const [selectedChapterId, setSelectedChapterId] = useState('')
+
+  const fetchCourses = useCallback(async () => {
+    try {
+      const res = await api.get('/api/education/courses')
+      setCourses(res.data?.items || [])
+    } catch { /* ignore */ }
+  }, [])
+
+  const fetchChapters = useCallback(async (courseId: string) => {
+    if (!courseId) { setChapterTree([]); return }
+    try {
+      const res = await api.get(`/api/education/courses/${courseId}/chapters/tree`)
+      setChapterTree(res.data?.tree || [])
+    } catch { setChapterTree([]) }
+  }, [])
+
+  useEffect(() => { fetchCourses() }, [fetchCourses])
+
+  const handleCourseChange = (courseId: string) => {
+    setSelectedCourseId(courseId)
+    setSelectedChapterId('')
+    setChapterTree([])
+    if (courseId) fetchChapters(courseId)
+  }
+
+  const handleChapterChange = (chapterId: string) => {
+    setSelectedChapterId(chapterId)
+  }
+
   useEffect(() => {
     chatRef.current?.scrollTo(0, chatRef.current.scrollHeight)
   }, [messages])
 
-  // 热门问题：近 100 条问答中频次最高的 3 个；无记录时用默认示例
+  // 示例题目：最新沉淀的题库题目（3道）
   useEffect(() => {
-    const token = sessionStorage.getItem('kb_token')
-    const auth = token ? JSON.parse(token).access_token : ''
-    fetch('/api/ai/hot-questions', { headers: { Authorization: `Bearer ${auth}` } })
-      .then((res) => (res.ok ? res.json() : { questions: [] }))
-      .then((data) => {
-        const qs: string[] = Array.isArray(data?.questions) ? data.questions : []
-        setSuggestions(qs.length > 0 ? qs.slice(0, 3) : fallbackSuggestions)
+    api.get('/api/quiz/bank', { params: { review_status: 'reviewed', offset: 0, limit: 3 } })
+      .then((res) => {
+        const items = (res.data?.items || []).filter((q: any) => q.status === 'published')
+        const qs = items.map((q: any) => q.question).filter(Boolean)
+        setSuggestions(qs.length > 0 ? qs : fallbackSuggestions)
       })
       .catch(() => setSuggestions(fallbackSuggestions))
   }, [])
@@ -85,7 +121,7 @@ export default function SearchQA() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${sessionStorage.getItem('kb_token') ? JSON.parse(sessionStorage.getItem('kb_token')!).access_token : ''}`,
         },
-        body: JSON.stringify({ question: text, stream: true }),
+        body: JSON.stringify({ question: text, stream: true, chapter_id: selectedChapterId || undefined }),
       })
 
       if (!res.ok) throw new Error('请求失败')
@@ -147,13 +183,15 @@ export default function SearchQA() {
   const displayName = user?.display_name || user?.username || 'U'
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <div ref={chatRef} style={{
         flex: 1, overflow: 'auto', padding: 24,
         display: 'flex', flexDirection: 'column', gap: 24,
+        minHeight: 0,
+        justifyContent: messages.length === 0 ? 'center' : 'flex-start',
       }}>
         {messages.length === 0 && (
-          <div style={{ textAlign: 'center', padding: '48px 24px', maxWidth: 560, margin: '0 auto' }}>
+          <div style={{ textAlign: 'center', padding: '24px', maxWidth: 680, margin: '0 auto', width: '100%' }}>
             <img
               src="/logo-sidebar.png" alt="KB"
               style={{ height: 80, width: 'auto', marginBottom: 16 }}
@@ -162,7 +200,7 @@ export default function SearchQA() {
             <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 20 }}>
               基于企业知识库的智能问答助手，支持流式对话、多轮上下文理解、自动来源追溯。
             </p>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center', marginBottom: 24 }}>
               {suggestions.map(s => (
                 <span
                   key={s}
@@ -173,6 +211,73 @@ export default function SearchQA() {
                   }}
                 >{s}</span>
               ))}
+            </div>
+            {courses.length > 0 && (
+              <div style={{ maxWidth: 680, margin: '0 auto 10px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)', flexShrink: 0 }}>检索范围：</span>
+                <select
+                  value={selectedCourseId}
+                  onChange={(e) => handleCourseChange(e.target.value)}
+                  style={{ padding: '4px 8px', fontSize: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-input)', color: 'var(--text)', outline: 'none', cursor: 'pointer' }}
+                >
+                  <option value="">全部课程</option>
+                  {courses.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
+                </select>
+                <select
+                  value={selectedChapterId}
+                  onChange={(e) => handleChapterChange(e.target.value)}
+                  disabled={!selectedCourseId}
+                  style={{ padding: '4px 8px', fontSize: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-input)', color: selectedCourseId ? 'var(--text)' : 'var(--text-muted)', outline: 'none', cursor: selectedCourseId ? 'pointer' : 'default' }}
+                >
+                  <option value="">全部章节</option>
+                  {(() => {
+                    const opts: React.ReactNode[] = []
+                    const flatten = (nodes: ChapterTreeNode[], depth: number) => {
+                      for (const n of nodes) {
+                        opts.push(<option key={n.id} value={n.id}>{'\u00A0\u00A0'.repeat(depth)}{n.title}</option>)
+                        flatten(n.children, depth + 1)
+                      }
+                    }
+                    flatten(chapterTree, 0)
+                    return opts
+                  })()}
+                </select>
+              </div>
+            )}
+            <div style={{
+              maxWidth: 680, margin: '0 auto', display: 'flex', alignItems: 'flex-end', gap: 10,
+              background: 'var(--bg-input)', border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-lg)', padding: '10px 14px',
+            }}>
+              <textarea
+                ref={textareaRef}
+                rows={1}
+                placeholder="输入你的问题，按 Enter 发送…"
+                value={input}
+                onChange={handleInputChange}
+                onKeyDown={handleKeyDown}
+                style={{
+                  flex: 1, border: 'none', outline: 'none', background: 'transparent',
+                  fontFamily: 'var(--font)', fontSize: 14, color: 'var(--text)',
+                  resize: 'none', minHeight: 24, maxHeight: 120, lineHeight: 1.5,
+                }}
+              />
+              <button
+                onClick={sendMessage}
+                disabled={loading || !input.trim()}
+                style={{
+                  width: 36, height: 36, borderRadius: '50%', background: 'var(--primary)',
+                  border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center',
+                  justifyContent: 'center', flexShrink: 0, opacity: loading || !input.trim() ? 0.5 : 1,
+                }}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" width="18" height="18">
+                  <line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" />
+                </svg>
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', marginTop: 8 }}>
+              支持流式响应 · 题库优先匹配 · 多路召回 + Rerank 排序
             </div>
           </div>
         )}
@@ -190,7 +295,7 @@ export default function SearchQA() {
             }}>
               {msg.role === 'user' ? displayName.charAt(0) : 'AI'}
             </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
               {msg.faqHit && (
                 <div style={{
                   display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px',
@@ -198,16 +303,21 @@ export default function SearchQA() {
                   borderRadius: 10, fontSize: 11, fontWeight: 500, marginBottom: 8,
                 }}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="20 6 9 17 4 12" /></svg>
-                  FAQ 缓存命中
+                  题库命中
                 </div>
               )}
               <div style={{
-                padding: '12px 16px', borderRadius: 'var(--radius-lg)', fontSize: 14, lineHeight: 1.7,
+                padding: '12px 16px', fontSize: 14, lineHeight: 1.7,
                 background: msg.role === 'user' ? 'var(--primary)' : 'var(--bg-card)',
                 color: msg.role === 'user' ? '#fff' : 'var(--text)',
-                borderBottomRightRadius: msg.role === 'user' ? 4 : undefined,
-                borderBottomLeftRadius: msg.role === 'assistant' ? 4 : undefined,
+                borderRadius: 12,
+                borderTopRightRadius: msg.role === 'user' ? 0 : 12,
+                borderTopLeftRadius: msg.role === 'assistant' ? 0 : 12,
+                borderBottomLeftRadius: 12,
+                borderBottomRightRadius: 12,
                 whiteSpace: msg.role === 'user' ? 'pre-wrap' : 'normal',
+                maxWidth: 'calc(100% - 8px)', wordBreak: 'break-word',
+                alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
               }}>
                 {msg.role === 'assistant' ? (
                   <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
@@ -249,8 +359,51 @@ export default function SearchQA() {
         ))}
       </div>
 
-      {/* Input Area */}
-      <div style={{ padding: '16px 24px 20px', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
+      {/* Input Area - only when messages exist */}
+      {messages.length > 0 && (
+        <div style={{ padding: '16px 24px 20px', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
+        {/* Scope Selector */}
+        {courses.length > 0 && (
+          <div style={{ maxWidth: 780, margin: '0 auto 10px', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)', flexShrink: 0 }}>检索范围：</span>
+            <select
+              value={selectedCourseId}
+              onChange={(e) => handleCourseChange(e.target.value)}
+              style={{
+                padding: '4px 8px', fontSize: 12, borderRadius: 6,
+                border: '1px solid var(--border)', background: 'var(--bg-input)',
+                color: 'var(--text)', outline: 'none', cursor: 'pointer',
+              }}
+            >
+              <option value="">全部课程</option>
+              {courses.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
+            </select>
+            <select
+              value={selectedChapterId}
+              onChange={(e) => handleChapterChange(e.target.value)}
+              disabled={!selectedCourseId}
+              style={{
+                padding: '4px 8px', fontSize: 12, borderRadius: 6,
+                border: '1px solid var(--border)', background: 'var(--bg-input)',
+                color: selectedCourseId ? 'var(--text)' : 'var(--text-muted)',
+                outline: 'none', cursor: selectedCourseId ? 'pointer' : 'default',
+              }}
+            >
+              <option value="">全部章节</option>
+              {(() => {
+                const opts: React.ReactNode[] = []
+                const flatten = (nodes: ChapterTreeNode[], depth: number) => {
+                  for (const n of nodes) {
+                    opts.push(<option key={n.id} value={n.id}>{'\u00A0\u00A0'.repeat(depth)}{n.title}</option>)
+                    flatten(n.children, depth + 1)
+                  }
+                }
+                flatten(chapterTree, 0)
+                return opts
+              })()}
+            </select>
+          </div>
+        )}
         <div style={{
           maxWidth: 780, margin: '0 auto', display: 'flex', alignItems: 'flex-end', gap: 10,
           background: 'var(--bg-input)', border: '1px solid var(--border)',
@@ -284,9 +437,10 @@ export default function SearchQA() {
           </button>
         </div>
         <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', marginTop: 8 }}>
-          支持流式响应 · FAQ 缓存优先匹配 · 多路召回 + Rerank 排序
+          支持流式响应 · 题库优先匹配 · 多路召回 + Rerank 排序
         </div>
       </div>
+      )}
     </div>
   )
 }

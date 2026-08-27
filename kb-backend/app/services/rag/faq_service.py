@@ -1,20 +1,19 @@
-import json
+"""统一沉淀池缓存：已发布题库条目构建问答缓存（Milvus），供 RAG 优先命中。"""
 import numpy as np
 from datetime import datetime, timedelta
-from collections import defaultdict
 
 from pymilvus import MilvusClient
-from sqlalchemy import select, update, delete, func, text
+from sqlalchemy import select, update, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from openai import AsyncOpenAI
 
 from app.config import settings
-from app.models.knowledge_unit import FAQ, FAQSourceType, FAQStatus, QAAccessLog, KnowledgeUnit
+from app.models.knowledge_unit import QuizQuestion, QuizQuestionStatus, QAAccessLog, KnowledgeUnit
 from app.services.vectorizer import embed_texts
 
 
 # ---------------------------------------------------------------------------
-# Milvus FAQ cache collection
+# Milvus 题库缓存 collection
 # ---------------------------------------------------------------------------
 
 _faq_cache_client: MilvusClient | None = None
@@ -35,6 +34,8 @@ def _ensure_faq_collection() -> MilvusClient:
     client = _get_faq_cache_client()
     collection = settings.FAQ_CACHE_COLLECTION
     if not client.has_collection(collection):
+        # pymilvus>=3 快速建集合自带 AUTOINDEX，显式 create_index 会报
+        # "at most one distinct index is allowed per field"
         client.create_collection(
             collection_name=collection,
             dimension=settings.EMBEDDING_DIM,
@@ -42,21 +43,12 @@ def _ensure_faq_collection() -> MilvusClient:
             auto_id=True,
             enable_dynamic_field=True,
         )
-        client.create_index(
-            collection_name=collection,
-            field_name="vector",
-            index_params={
-                "index_type": "HNSW",
-                "metric_type": "COSINE",
-                "params": {"M": 16, "efConstruction": 200},
-            },
-        )
     client.load_collection(collection)
     return client
 
 
 # ---------------------------------------------------------------------------
-# LLM FAQ answer generation
+# LLM 答案生成（问答日志挖掘用）
 # ---------------------------------------------------------------------------
 
 FAQ_ANSWER_PROMPT = """你是一个知识库助手。根据用户高频提问和相关知识库内容，生成一个标准化的FAQ答案。
@@ -96,11 +88,11 @@ async def _generate_faq_answer(question: str, context: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# FAQ Cache
+# 题库缓存读写
 # ---------------------------------------------------------------------------
 
 async def match_faq_cache(query_vector: list[float]) -> dict | None:
-    """匹配 FAQ 缓存，返回 {faq_id, question, answer} 或 None"""
+    """匹配题库缓存，返回 {faq_id, question, answer} 或 None（faq_id 即题库条目 id）"""
     try:
         client = _ensure_faq_collection()
         results = client.search(
@@ -123,15 +115,19 @@ async def match_faq_cache(query_vector: list[float]) -> dict | None:
         return None
 
 
-async def _insert_faq_cache(faq_id: str, question: str, answer: str) -> None:
+async def insert_pool_cache(question_id: str, question: str, answer: str) -> None:
+    """题库条目发布后写入缓存（answer 为空不入缓存；先删同 id 保证幂等）"""
+    if not answer or not answer.strip():
+        return
     embeddings = await embed_texts([question])
     if not embeddings:
         return
     client = _ensure_faq_collection()
+    await delete_pool_cache(question_id)
     client.insert(
         collection_name=settings.FAQ_CACHE_COLLECTION,
         data=[{
-            "faq_id": faq_id,
+            "faq_id": question_id,
             "question": question,
             "answer": answer,
             "vector": np.array(embeddings[0], dtype=np.float32),
@@ -139,42 +135,53 @@ async def _insert_faq_cache(faq_id: str, question: str, answer: str) -> None:
     )
 
 
-async def _delete_faq_cache(faq_id: str) -> None:
+async def delete_pool_cache(question_id: str) -> None:
+    """题库条目驳回/下线/删除后清理缓存"""
     try:
         client = _get_faq_cache_client()
         client.delete(
             collection_name=settings.FAQ_CACHE_COLLECTION,
-            filter=f'faq_id == "{faq_id}"',
+            filter=f'faq_id == "{question_id}"',
         )
     except Exception:
         pass
 
 
 async def sync_faq_cache(db: AsyncSession) -> int:
-    """全量同步已发布 FAQ 到向量缓存，返回同步数量"""
-    stmt = select(FAQ).where(FAQ.status == FAQStatus.PUBLISHED)
-    result = await db.execute(stmt)
-    faqs = list(result.scalars().all())
+    """全量重建缓存：已发布且有参考答案的题库条目，返回同步数量。
 
-    if not faqs:
+    多 uvicorn worker 同时启动时通过 Postgres advisory lock 保证只有一个
+    worker 执行重建，其余直接跳过，避免集合被交错 drop/insert 产生重复。
+    """
+    lock = await db.execute(text("SELECT pg_try_advisory_lock(88080001)"))
+    if not lock.scalar():
         return 0
-
-    # 清空旧缓存
     try:
-        client = _get_faq_cache_client()
-        if client.has_collection(settings.FAQ_CACHE_COLLECTION):
-            client.drop_collection(settings.FAQ_CACHE_COLLECTION)
-    except Exception:
-        pass
+        stmt = select(QuizQuestion).where(
+            QuizQuestion.status == QuizQuestionStatus.PUBLISHED,
+            func.length(QuizQuestion.reference_answer) > 0,
+        )
+        result = await db.execute(stmt)
+        questions = list(result.scalars().all())
 
-    for faq in faqs:
-        await _insert_faq_cache(faq.id, faq.question, faq.answer)
+        # 清空旧缓存
+        try:
+            client = _get_faq_cache_client()
+            if client.has_collection(settings.FAQ_CACHE_COLLECTION):
+                client.drop_collection(settings.FAQ_CACHE_COLLECTION)
+        except Exception:
+            pass
 
-    return len(faqs)
+        for q in questions:
+            await insert_pool_cache(q.id, q.question, q.reference_answer)
+
+        return len(questions)
+    finally:
+        await db.execute(text("SELECT pg_advisory_unlock(88080001)"))
 
 
 # ---------------------------------------------------------------------------
-# FAQ Mining
+# 问答日志挖掘（沉淀池候选来源之一）
 # ---------------------------------------------------------------------------
 
 async def _find_related_units(db: AsyncSession, question: str) -> str:
@@ -194,7 +201,7 @@ async def _find_related_units(db: AsyncSession, question: str) -> str:
 
 
 async def mine_faqs(db: AsyncSession) -> int:
-    """从问答日志中挖掘高频问题，生成候选 FAQ。返回新增候选数量。"""
+    """从问答日志中挖掘高频问题，生成候选题（含参考答案）。返回新增候选数量。"""
     cutoff = datetime.utcnow() - timedelta(days=settings.FAQ_MINING_DAYS)
 
     # 1. 获取近期提问
@@ -229,7 +236,7 @@ async def mine_faqs(db: AsyncSession) -> int:
         cluster = [i]
         visited[i] = True
         for j in range(i + 1, len(questions)):
-            if not visited[j] and sim_matrix[i][j] >= 0.85:
+            if not visited[j] and sim_matrix[i][j] >= settings.FAQ_CLUSTER_THRESHOLD:
                 cluster.append(j)
                 visited[j] = True
         clusters.append(cluster)
@@ -240,9 +247,9 @@ async def mine_faqs(db: AsyncSession) -> int:
     if not candidate_clusters:
         return 0
 
-    # 5. 检查已有 FAQ 避免重复
-    existing_stmt = select(FAQ.question).where(
-        FAQ.status.in_([FAQStatus.PENDING_REVIEW, FAQStatus.PUBLISHED])
+    # 5. 检查池内已有条目避免重复
+    existing_stmt = select(QuizQuestion.question).where(
+        QuizQuestion.status.in_([QuizQuestionStatus.PENDING_REVIEW, QuizQuestionStatus.PUBLISHED])
     )
     existing_result = await db.execute(existing_stmt)
     existing_questions = [row[0] for row in existing_result.all()]
@@ -256,17 +263,19 @@ async def mine_faqs(db: AsyncSession) -> int:
         if any(rep_question in eq or eq in rep_question for eq in existing_questions):
             continue
 
-        # 查找关联知识单元
+        # 查找关联知识单元并生成参考答案
         context = await _find_related_units(db, rep_question)
         answer = await _generate_faq_answer(rep_question, context)
 
-        faq = FAQ(
+        db.add(QuizQuestion(
             question=rep_question,
-            answer=answer,
-            source_type=FAQSourceType.AUTO_MINED,
-            status=FAQStatus.PENDING_REVIEW,
-        )
-        db.add(faq)
+            reference_answer=answer,
+            category="",
+            source_unit_id="",
+            source_type="auto_mined",
+            status=QuizQuestionStatus.PENDING_REVIEW,
+        ))
+        existing_questions.append(rep_question)
         new_count += 1
 
     if new_count:
@@ -276,111 +285,15 @@ async def mine_faqs(db: AsyncSession) -> int:
 
 
 # ---------------------------------------------------------------------------
-# FAQ CRUD
+# 命中计数
 # ---------------------------------------------------------------------------
 
-async def list_recommendations(
-    db: AsyncSession,
-    offset: int = 0,
-    limit: int = 20,
-) -> tuple[list[FAQ], int]:
-    """查询待审核的 FAQ 推荐列表"""
-    stmt = select(FAQ).where(FAQ.status == FAQStatus.PENDING_REVIEW)
-    count_result = await db.execute(select(func.count()).select_from(stmt.subquery()))
-    total = count_result.scalar() or 0
-
-    result = await db.execute(
-        stmt.order_by(FAQ.created_at.desc()).offset(offset).limit(limit)
-    )
-    return list(result.scalars().all()), total
-
-
-async def review_faq(
-    db: AsyncSession,
-    faq_id: str,
-    action: str,
-    reviewer_id: str,
-    edited_answer: str = "",
-) -> FAQ | None:
-    """审核 FAQ：approve 发布上线，reject 驳回"""
-    stmt = select(FAQ).where(FAQ.id == faq_id)
-    result = await db.execute(stmt)
-    faq = result.scalar_one_or_none()
-    if not faq:
-        return None
-
-    if action == "approve":
-        if edited_answer:
-            faq.answer = edited_answer
-        faq.status = FAQStatus.PUBLISHED
-        faq.reviewer_id = reviewer_id
-        faq.reviewed_at = datetime.utcnow()
-        await db.commit()
-        await db.refresh(faq)
-
-        # 写入缓存
-        await _insert_faq_cache(faq.id, faq.question, faq.answer)
-
-    elif action == "reject":
-        faq.status = FAQStatus.REJECTED
-        faq.reviewer_id = reviewer_id
-        faq.reviewed_at = datetime.utcnow()
-        await db.commit()
-        await db.refresh(faq)
-
-    return faq
-
-
-async def list_published_faqs(
-    db: AsyncSession,
-    offset: int = 0,
-    limit: int = 20,
-) -> tuple[list[FAQ], int]:
-    """查询已发布 FAQ 列表"""
-    stmt = select(FAQ).where(FAQ.status == FAQStatus.PUBLISHED)
-    count_result = await db.execute(select(func.count()).select_from(stmt.subquery()))
-    total = count_result.scalar() or 0
-
-    result = await db.execute(
-        stmt.order_by(FAQ.updated_at.desc()).offset(offset).limit(limit)
-    )
-    return list(result.scalars().all()), total
-
-
-async def delete_faq(db: AsyncSession, faq_id: str) -> bool:
-    """删除 FAQ 并清理缓存"""
-    stmt = select(FAQ).where(FAQ.id == faq_id)
-    result = await db.execute(stmt)
-    faq = result.scalar_one_or_none()
-    if not faq:
-        return False
-
-    await db.delete(faq)
-    await db.commit()
-
-    await _delete_faq_cache(faq_id)
-    return True
-
-
-async def update_faq(db: AsyncSession, faq_id: str, question: str, answer: str) -> FAQ | None:
-    """更新 FAQ 问题与答案"""
-    stmt = select(FAQ).where(FAQ.id == faq_id)
-    result = await db.execute(stmt)
-    faq = result.scalar_one_or_none()
-    if not faq:
-        return None
-
-    faq.question = question
-    faq.answer = answer
-    await db.commit()
-    await db.refresh(faq)
-    return faq
-
-
-async def increment_hit_count(db: AsyncSession, faq_id: str) -> None:
-    """增加 FAQ 命中次数"""
+async def increment_hit_count(db: AsyncSession, question_id: str) -> None:
+    """增加题库条目命中次数"""
     try:
-        stmt = update(FAQ).where(FAQ.id == faq_id).values(hit_count=FAQ.hit_count + 1)
+        stmt = update(QuizQuestion).where(QuizQuestion.id == question_id).values(
+            usage_count=QuizQuestion.usage_count + 1
+        )
         await db.execute(stmt)
         await db.commit()
     except Exception:

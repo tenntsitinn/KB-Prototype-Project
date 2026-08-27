@@ -41,6 +41,12 @@ class QuestionReviewRequest(BaseModel):
     action: str  # approve | reject | offline | edit
     question: str | None = None
     reference_answer: str | None = None
+    point_ids: list[str] | None = None  # edit 时整体替换关联知识点
+
+
+class QuestionPointOut(BaseModel):
+    id: str
+    title: str
 
 
 class QuestionOut(BaseModel):
@@ -56,6 +62,7 @@ class QuestionOut(BaseModel):
     reviewer_name: str = ""
     reviewed_at: datetime | None
     created_at: datetime
+    points: list[QuestionPointOut] = Field(default_factory=list)
 
     class Config:
         from_attributes = True

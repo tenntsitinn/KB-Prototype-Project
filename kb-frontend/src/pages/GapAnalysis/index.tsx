@@ -70,7 +70,7 @@ export default function GapAnalysis() {
   const totalPages = Math.ceil(total / pageSize)
 
   const pageContainer: React.CSSProperties = {
-    flex: 1, overflow: 'auto', padding: 24,
+    flex: 1, overflow: 'auto', padding: 24, minHeight: 0,
   }
 
   return (

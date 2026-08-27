@@ -10,6 +10,7 @@ export const S = {
     gap: 12,
     background: '#F5F6F8',
     height: '100%',
+    minHeight: 0,
   },
   // Upload Zone
   uploadZone: {

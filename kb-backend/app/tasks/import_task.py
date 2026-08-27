@@ -65,6 +65,16 @@ async def _async_process_document(task, file_path: str, filename: str, creator_i
         return {"status": "failed", "error": result.get("error", "未知错误")}
 
     task.update_state(state="SUCCESS", meta={"progress": progress, "stage": stage, "unit_id": unit_id})
+
+    # 导入完成后自动触发知识点提取（异步链，不阻塞导入结果）
+    if unit_id:
+        try:
+            from app.tasks.point_task import extract_points
+            extract_points.delay(unit_id)
+            logger.info("已触发知识点提取: unit=%s", unit_id)
+        except Exception as e:
+            logger.warning("触发知识点提取失败（不影响导入结果）: unit=%s err=%s", unit_id, e)
+
     return {"unit_id": unit_id, "status": "completed"}
 
 
@@ -120,6 +130,13 @@ async def _async_retry_vectorize(task, unit_id: str) -> dict:
         ))
         await db.commit()
         logger.info("重试向量化完成: unit=%s", unit_id)
+
+    # 补齐发布的单元同样触发知识点提取
+    try:
+        from app.tasks.point_task import extract_points
+        extract_points.delay(unit_id)
+    except Exception as e:
+        logger.warning("触发知识点提取失败（不影响重试结果）: unit=%s err=%s", unit_id, e)
 
     task.update_state(state="SUCCESS", meta={"progress": 100, "stage": "completed", "unit_id": unit_id})
     return {"unit_id": unit_id, "status": "completed"}

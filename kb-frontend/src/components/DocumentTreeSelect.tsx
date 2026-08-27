@@ -1,9 +1,22 @@
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
+import api from '../services/api'
 
 export interface TreeDocument {
   id: string
   title: string
   category: string
+}
+
+interface PointBrief {
+  id: string
+  title: string
+  status: string
+}
+
+interface UnitPoints {
+  points_status: string
+  points_error: string
+  points: PointBrief[]
 }
 
 interface DocumentTreeSelectProps {
@@ -12,67 +25,55 @@ interface DocumentTreeSelectProps {
   onChange: (ids: Set<string>) => void
 }
 
-interface TagGroup {
-  tag: string
-  docs: TreeDocument[]
-}
-
-const TAG_LABELS: Record<string, string> = {
-  '': '未分类',
-}
-
-function tagLabel(tag: string): string {
-  return TAG_LABELS[tag] || tag
+const POINTS_STATUS_TEXT: Record<string, string> = {
+  extracting: '知识点拆分中…',
+  failed: '知识点拆分失败',
 }
 
 export default function DocumentTreeSelect({
   documents, selectedIds, onChange,
 }: DocumentTreeSelectProps) {
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const [pointsMap, setPointsMap] = useState<Record<string, UnitPoints>>({})
+  const [pointsLoaded, setPointsLoaded] = useState(false)
 
-  const groups = useMemo<TagGroup[]>(() => {
-    const map = new Map<string, TreeDocument[]>()
-    for (const doc of documents) {
-      const tag = doc.category || ''
-      if (!map.has(tag)) map.set(tag, [])
-      map.get(tag)!.push(doc)
-    }
-    return Array.from(map.entries())
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([tag, docs]) => ({ tag, docs: docs.sort((a, b) => a.title.localeCompare(b.title)) }))
-  }, [documents])
+  const unitIdsKey = useMemo(
+    () => documents.map(d => d.id).join(','),
+    [documents],
+  )
 
-  const filteredGroups = useMemo<TagGroup[]>(() => {
+  useEffect(() => {
+    if (!unitIdsKey) return
+    let cancelled = false
+    setPointsLoaded(false)
+    api.post('/api/education/points/batch', { unit_ids: unitIdsKey.split(',') })
+      .then((res) => {
+        if (cancelled) return
+        setPointsMap(res.data?.units || {})
+        setPointsLoaded(true)
+      })
+      .catch(() => {
+        if (!cancelled) setPointsLoaded(true)
+      })
+    return () => { cancelled = true }
+  }, [unitIdsKey])
+
+  const filteredDocs = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return groups
-    return groups
-      .map(g => ({
-        ...g,
-        docs: g.docs.filter(d => d.title.toLowerCase().includes(q)),
-      }))
-      .filter(g => g.docs.length > 0)
-  }, [groups, query])
+    if (!q) return documents
+    return documents.filter(d => d.title.toLowerCase().includes(q))
+      .sort((a, b) => a.title.localeCompare(b.title))
+  }, [documents, query])
 
-  const toggleCollapse = useCallback((tag: string) => {
+  const toggleCollapse = useCallback((id: string) => {
     setCollapsed(prev => {
       const next = new Set(prev)
-      if (next.has(tag)) next.delete(tag)
-      else next.add(tag)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
       return next
     })
   }, [])
-
-  const toggleTag = useCallback((tag: string, docs: TreeDocument[]) => {
-    const allSelected = docs.every(d => selectedIds.has(d.id))
-    const next = new Set(selectedIds)
-    if (allSelected) {
-      for (const d of docs) next.delete(d.id)
-    } else {
-      for (const d of docs) next.add(d.id)
-    }
-    onChange(next)
-  }, [selectedIds, onChange])
 
   const toggleDoc = useCallback((id: string) => {
     const next = new Set(selectedIds)
@@ -82,14 +83,14 @@ export default function DocumentTreeSelect({
   }, [selectedIds, onChange])
 
   const selectAll = useCallback(() => {
-    onChange(new Set(documents.map(d => d.id)))
-  }, [documents, onChange])
+    onChange(new Set(filteredDocs.map(d => d.id)))
+  }, [filteredDocs, onChange])
 
   const clearAll = useCallback(() => {
     onChange(new Set())
   }, [onChange])
 
-  const allSelected = selectedIds.size === documents.length && documents.length > 0
+  const allSelected = filteredDocs.length > 0 && filteredDocs.every(d => selectedIds.has(d.id))
 
   const checkboxStyle = (checked: boolean, indeterminate: boolean): React.CSSProperties => ({
     width: 16, height: 16, borderRadius: 3, border: `1.5px solid ${checked || indeterminate ? 'var(--primary)' : 'var(--border)'}`,
@@ -108,6 +109,56 @@ export default function DocumentTreeSelect({
     <div style={{ width: 8, height: 2, background: 'var(--primary)', borderRadius: 1 }} />
   )
 
+  const pointBody = (unitId: string) => {
+    if (!pointsLoaded) {
+      return <div style={{ padding: '4px 0', fontSize: 12, color: 'var(--text-muted)' }}>知识点加载中…</div>
+    }
+    const entry = pointsMap[unitId]
+    const statusText = POINTS_STATUS_TEXT[entry?.points_status || 'none']
+    if (statusText) {
+      const isFailed = entry?.points_status === 'failed'
+      const errorMsg = entry?.points_error || ''
+      const isBalanceError = errorMsg.includes('Insufficient Balance') || errorMsg.includes('余额')
+      return (
+        <div style={{ padding: '4px 0', fontSize: 12 }}>
+          <span style={{ color: isFailed ? 'var(--warning, #d97706)' : 'var(--text-muted)' }}>
+            {statusText}
+          </span>
+          {isFailed && errorMsg && (
+            <span style={{ color: 'var(--error, #dc2626)', marginLeft: 6 }}>
+              {isBalanceError ? '（API 余额不足，请更换 Key 后重新提取）' : `（${errorMsg}）`}
+            </span>
+          )}
+        </div>
+      )
+    }
+    const points = entry?.points || []
+    if (points.length === 0) {
+      return <div style={{ padding: '4px 0', fontSize: 12, color: 'var(--text-muted)' }}>暂无知识点</div>
+    }
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '2px 0' }}>
+        {points.map(p => (
+          <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{
+              width: 5, height: 5, borderRadius: '50%', flexShrink: 0,
+              background: p.status === 'pending_review' ? 'var(--warning, #d97706)' : 'var(--success, #16a34a)',
+            }} />
+            <span style={{
+              fontSize: 12, color: 'var(--text-secondary, var(--text))',
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>
+              {p.title}
+            </span>
+            {p.status === 'pending_review' && (
+              <span style={{ fontSize: 10, color: 'var(--warning, #d97706)', flexShrink: 0 }}>待审核</span>
+            )}
+          </div>
+        ))}
+      </div>
+    )
+  }
+
   return (
     <div style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)', overflow: 'hidden' }}>
       {/* 搜索栏 */}
@@ -118,7 +169,7 @@ export default function DocumentTreeSelect({
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="搜索文档…"
+          placeholder="搜索章节…"
           style={{
             flex: 1, minWidth: 0, border: 'none', outline: 'none', background: 'transparent',
             fontFamily: 'var(--font)', fontSize: 13, color: 'var(--text)',
@@ -138,7 +189,7 @@ export default function DocumentTreeSelect({
           {allSelected ? checkMark() : selectedIds.size > 0 ? indeterminateMark() : null}
         </div>
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-          {selectedIds.size > 0 ? `已选 ${selectedIds.size} 篇` : '全选'}
+          {selectedIds.size > 0 ? `已选 ${selectedIds.size} 个章节` : '全选章节'}
         </span>
         {selectedIds.size > 0 && (
           <button onClick={clearAll} style={{
@@ -150,76 +201,63 @@ export default function DocumentTreeSelect({
         )}
       </div>
 
-      {/* 树形列表 */}
+      {/* 章节列表 */}
       <div style={{ maxHeight: 320, overflowY: 'auto' }}>
-        {filteredGroups.map(g => {
-          const selectedCount = g.docs.filter(d => selectedIds.has(d.id)).length
-          const allChecked = selectedCount === g.docs.length
-          const indeterminate = selectedCount > 0 && !allChecked
-          const isCollapsed = collapsed.has(g.tag) && !query
+        {filteredDocs.map(d => {
+          const checked = selectedIds.has(d.id)
+          const isCollapsed = collapsed.has(d.id) && !query
+          const points = pointsMap[d.id]?.points
+          const pointCount = points?.length ?? 0
 
           return (
-            <div key={g.tag}>
-              {/* Tag 行 */}
+            <div key={d.id} style={{ borderBottom: '1px solid var(--border-light)' }}>
+              {/* 章节行 */}
               <div
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px',
-                  cursor: 'pointer', background: 'var(--bg-hover, #f7f8fa)',
-                  borderBottom: isCollapsed ? '1px solid var(--border-light)' : 'none',
+                  display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px',
+                  cursor: 'pointer',
                 }}
-                onClick={() => { if (!query) toggleCollapse(g.tag) }}
+                onClick={() => toggleCollapse(d.id)}
               >
-                {!query && (
-                  <svg
-                    width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2"
-                    style={{ flexShrink: 0, transition: 'transform 0.15s', transform: isCollapsed ? 'rotate(-90deg)' : 'none' }}
-                  >
-                    <polyline points="6 9 12 15 18 9" />
-                  </svg>
-                )}
-                <div style={checkboxStyle(allChecked, indeterminate)} onClick={(e) => { e.stopPropagation(); toggleTag(g.tag, g.docs) }}>
-                  {allChecked ? checkMark() : indeterminate ? indeterminateMark() : null}
+                {/* 展开箭头 */}
+                <svg
+                  width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2"
+                  style={{ flexShrink: 0, transition: 'transform 0.15s', transform: isCollapsed ? 'rotate(-90deg)' : 'none' }}
+                >
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+                {/* 章节 checkbox */}
+                <div style={checkboxStyle(checked, false)} onClick={(e) => { e.stopPropagation(); toggleDoc(d.id) }}>
+                  {checked ? checkMark() : null}
                 </div>
-                <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)' }}>
-                  {tagLabel(g.tag)}
+                {/* 章节名 */}
+                <span style={{
+                  fontSize: 13, fontWeight: 500, color: 'var(--text)',
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>
+                  {d.title}
                 </span>
-                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                  ({selectedCount}/{g.docs.length})
-                </span>
+                {/* 知识点数量 */}
+                {pointCount > 0 && (
+                  <span style={{ marginLeft: 'auto', flexShrink: 0, fontSize: 11, color: 'var(--text-muted)' }}>
+                    {pointCount} 个知识点
+                  </span>
+                )}
               </div>
 
-              {/* 文档列表 */}
-              {!isCollapsed && g.docs.map(d => {
-                const checked = selectedIds.has(d.id)
-                return (
-                  <div
-                    key={d.id}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 8,
-                      padding: '6px 10px 6px 32px', cursor: 'pointer',
-                      borderBottom: '1px solid var(--border-light)',
-                    }}
-                    onClick={() => toggleDoc(d.id)}
-                  >
-                    <div style={checkboxStyle(checked, false)}>
-                      {checked ? checkMark() : null}
-                    </div>
-                    <span style={{
-                      fontSize: 13, color: 'var(--text)',
-                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    }}>
-                      {d.title}
-                    </span>
-                  </div>
-                )
-              })}
+              {/* 知识点列表 */}
+              {!isCollapsed && (
+                <div style={{ padding: '2px 10px 8px 38px' }}>
+                  {pointBody(d.id)}
+                </div>
+              )}
             </div>
           )
         })}
 
-        {filteredGroups.length === 0 && (
+        {filteredDocs.length === 0 && (
           <div style={{ padding: '20px 12px', textAlign: 'center', fontSize: 12, color: 'var(--text-muted)' }}>
-            无匹配文档
+            无匹配章节
           </div>
         )}
       </div>

@@ -1,8 +1,35 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
+import base64
+import hashlib
 import bcrypt
 import jwt
+from cryptography.fernet import Fernet
 from app.config import settings
+
+
+def _get_fernet() -> Fernet:
+    raw = settings.ENCRYPTION_KEY or settings.JWT_SECRET_KEY
+    key = base64.urlsafe_b64encode(hashlib.sha256(raw.encode()).digest())
+    return Fernet(key)
+
+
+_fernet = _get_fernet()
+
+
+def encrypt_value(plaintext: str) -> str:
+    if not plaintext:
+        return ""
+    return _fernet.encrypt(plaintext.encode()).decode()
+
+
+def decrypt_value(ciphertext: str) -> str:
+    if not ciphertext:
+        return ""
+    try:
+        return _fernet.decrypt(ciphertext.encode()).decode()
+    except Exception:
+        return ciphertext
 
 
 def hash_password(password: str) -> str:

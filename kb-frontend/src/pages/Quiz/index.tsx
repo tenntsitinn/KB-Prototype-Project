@@ -1,10 +1,10 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useMemo } from 'react'
 import api from '../../services/api'
 import type { Phase, Tag, QuizQuestion, QuizAnswerResult, DocumentItem } from './model'
 import DocumentTreeSelect from '../../components/DocumentTreeSelect'
 
 const containerStyle: React.CSSProperties = {
-  flex: 1, overflow: 'auto', padding: 24,
+  flex: 1, overflow: 'auto', padding: 24, minHeight: 0,
   display: 'flex', flexDirection: 'column', alignItems: 'center',
 }
 
@@ -34,6 +34,18 @@ export default function Quiz() {
   const [askedIds, setAskedIds] = useState<string[]>([])
   const [history, setHistory] = useState<{question: string; score: number}[]>([])
   const [error, setError] = useState('')
+  const [selectedCourse, setSelectedCourse] = useState<string>('')
+  const [courseOpen, setCourseOpen] = useState(false)
+
+  const courses = useMemo(() => {
+    const set = new Set(documents.map(d => d.category).filter(Boolean))
+    return Array.from(set).sort()
+  }, [documents])
+
+  const filteredDocuments = useMemo(() => {
+    if (!selectedCourse) return documents
+    return documents.filter(d => d.category === selectedCourse)
+  }, [documents, selectedCourse])
 
   useEffect(() => {
     api.get('/api/tags').then((res) => {
@@ -133,18 +145,79 @@ export default function Quiz() {
     return (
       <div style={containerStyle}>
         <div style={cardStyle}>
-          <h2 style={{ fontSize: 20, fontWeight: 600, margin: '0 0 8px', color: 'var(--text)' }}>智能出题</h2>
-          <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: '0 0 24px', lineHeight: 1.6 }}>
-            选择知识范围，AI 基于其中的内容生成开放式问题。勾选标签可全选其下所有文档，也可展开单独勾选文档。一题一卡，作答后即时评分并给出参考答案。
+          {/* 顶部：标题 + 课程选择 */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
+            <h2 style={{ fontSize: 20, fontWeight: 600, margin: 0, color: 'var(--text)' }}>智能出题</h2>
+            {/* 课程下拉选择 */}
+            <div style={{ position: 'relative' }}>
+              <button
+                onClick={() => setCourseOpen(!courseOpen)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  padding: '6px 12px', borderRadius: 6,
+                  border: '1px solid var(--border)', background: 'var(--bg)',
+                  fontSize: 13, color: 'var(--text)', cursor: 'pointer',
+                  fontFamily: 'var(--font)',
+                }}
+              >
+                <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>课程</span>
+                <span style={{ fontWeight: 500 }}>{selectedCourse || '全部'}</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2"
+                  style={{ transform: courseOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}>
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </button>
+              {courseOpen && (
+                <div style={{
+                  position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 10,
+                  minWidth: 160, background: 'var(--bg-card)', border: '1px solid var(--border)',
+                  borderRadius: 8, boxShadow: 'var(--shadow)', overflow: 'hidden',
+                }}>
+                  <div
+                    onClick={() => { setSelectedCourse(''); setSelectedIds(new Set()); setCourseOpen(false) }}
+                    style={{
+                      padding: '8px 14px', fontSize: 13, cursor: 'pointer',
+                      background: !selectedCourse ? 'var(--primary-light, rgba(59,130,246,0.08))' : 'transparent',
+                      color: !selectedCourse ? 'var(--primary)' : 'var(--text)',
+                      fontWeight: !selectedCourse ? 600 : 400,
+                    }}
+                  >
+                    全部 <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 4 }}>{documents.length}</span>
+                  </div>
+                  {courses.map(c => {
+                    const count = documents.filter(d => d.category === c).length
+                    const active = selectedCourse === c
+                    return (
+                      <div
+                        key={c}
+                        onClick={() => { setSelectedCourse(c); setSelectedIds(new Set()); setCourseOpen(false) }}
+                        style={{
+                          padding: '8px 14px', fontSize: 13, cursor: 'pointer',
+                          background: active ? 'var(--primary-light, rgba(59,130,246,0.08))' : 'transparent',
+                          color: active ? 'var(--primary)' : 'var(--text)',
+                          fontWeight: active ? 600 : 400,
+                          borderTop: '1px solid var(--border-light)',
+                        }}
+                      >
+                        {c} <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 4 }}>{count}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+          <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: '0 0 20px', lineHeight: 1.6 }}>
+            选择出题范围，AI 基于章节中的知识点生成开放式问题。勾选章节即覆盖其下全部知识点。一题一卡，作答后即时评分并给出参考答案。
           </p>
 
           <div style={{ marginBottom: 24 }}>
             <div style={{ ...labelStyle, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span>出题范围（按标签分组，勾选标签 = 全选其下文档）</span>
-              <span style={{ fontSize: 11 }}>{tags.length} 个标签 · {documents.length} 篇文档</span>
+              <span>出题范围{selectedCourse ? ` — ${selectedCourse}` : ''}</span>
+              <span style={{ fontSize: 11 }}>{filteredDocuments.length} 个章节</span>
             </div>
             <DocumentTreeSelect
-              documents={documents}
+              documents={filteredDocuments}
               selectedIds={selectedIds}
               onChange={setSelectedIds}
             />
@@ -156,7 +229,7 @@ export default function Quiz() {
             disabled={selectedIds.size === 0}
             onClick={startQuiz}
           >
-            {selectedIds.size > 0 ? `开始答题（已选 ${selectedIds.size} 篇）` : '请先选择出题范围'}
+            {selectedIds.size > 0 ? `开始答题（已选 ${selectedIds.size} 个章节）` : '请先选择出题范围'}
           </button>
           {history.length > 0 && (
             <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border-light)' }}>
@@ -183,7 +256,7 @@ export default function Quiz() {
         alignItems: 'center', marginBottom: 12, fontSize: 13, color: 'var(--text-muted)',
       }}>
         <span>
-          已答 {history.length} 题 · 已选 {selectedIds.size} 篇文档
+          已答 {history.length} 题 · 已选 {selectedIds.size} 个章节
         </span>
         <button className="btn btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }} onClick={exitQuiz}>
           退出本轮
