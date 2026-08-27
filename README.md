@@ -85,7 +85,7 @@ flowchart LR
 │   └── docker-compose.yml
 ├── kb-frontend/         # 前端 (React + Vite)
 │   └── src/pages/       # 仪表盘/知识管理/智能问答/知识点审核/测验/题库/缺口分析/系统管理/个人设置
-└── ocr-server/          # 独立 OCR 服务(可选,用于扫描件解析)
+└── ocr-server/          # 独立 OCR 服务(可选,曾用于接自部署 unlimitedOCR 实验,性价比不高,可忽略)
 ```
 
 ## 核心流程实现方式
@@ -258,3 +258,7 @@ npm run build                        # 生产构建
 | Docker 镜像构建门禁 | CI 无 `docker build` 校验步骤 |
 | 多轮对话支持 | 会话历史仅用于前端回放,推理时不含上下文 |
 | 检索个性化 | Rerank 无状态,未接入用户掌握度/偏好 |
+
+## 后续方向
+
+功能上继续完善出题功能(组卷策略、难度分层、错题驱动复习),RAG 链路基本冻结不再改动。
