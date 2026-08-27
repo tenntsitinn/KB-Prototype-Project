@@ -2,7 +2,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.core.dependencies import RequirePermission
-from app.core.permissions import PERM_KNOWLEDGE_READ, UserPermissions
+from app.core.permissions import PERM_QUIZ_MANAGE, UserPermissions
 from app.core.security import decode_token, hash_password
 from app.models.user import Role, RolePermission, User, UserRole
 from app.services.auth_service import login
@@ -17,7 +17,7 @@ async def _create_user_with_permission(db_session, username: str = "reader") -> 
         status="active",
     )
     role = Role(id=f"role-{username}", role_name="Reader", role_code=f"reader-{username}")
-    role.permissions.append(RolePermission(permission_code=PERM_KNOWLEDGE_READ))
+    role.permissions.append(RolePermission(permission_code=PERM_QUIZ_MANAGE))
     user.roles.append(UserRole(role=role))
     db_session.add(user)
     await db_session.commit()
@@ -32,7 +32,7 @@ async def test_login_returns_tokens_and_role_permissions(db_session):
 
     assert decode_token(response.access_token)["type"] == "access"
     assert decode_token(response.refresh_token)["type"] == "refresh"
-    assert response.permissions == [PERM_KNOWLEDGE_READ]
+    assert response.permissions == [PERM_QUIZ_MANAGE]
     assert response.user_info.username == "reader"
 
 
@@ -48,15 +48,15 @@ async def test_login_rejects_wrong_password(db_session):
 
 @pytest.mark.asyncio
 async def test_permission_guard_allows_required_permission():
-    guard = RequirePermission(PERM_KNOWLEDGE_READ)
-    permissions = UserPermissions({PERM_KNOWLEDGE_READ})
+    guard = RequirePermission(PERM_QUIZ_MANAGE)
+    permissions = UserPermissions({PERM_QUIZ_MANAGE})
 
     assert await guard(permissions) is permissions
 
 
 @pytest.mark.asyncio
 async def test_permission_guard_returns_403_when_permission_is_missing():
-    guard = RequirePermission(PERM_KNOWLEDGE_READ)
+    guard = RequirePermission(PERM_QUIZ_MANAGE)
 
     with pytest.raises(HTTPException) as exc_info:
         await guard(UserPermissions())

@@ -62,8 +62,8 @@ async def test_question_fake_recall_rerank_and_context(db_session, monkeypatch, 
         del query, limit, threshold
         return [unrelated, relevant]
 
-    async def fake_hyde_search(query, limit, threshold, user_api_key=""):
-        del query, limit, threshold, user_api_key
+    async def fake_hyde_search(query, limit, threshold, user_api_key="", user_base_url="", user_model=""):
+        del query, limit, threshold, user_api_key, user_base_url, user_model
         return [relevant]
 
     async def fake_keyword_search(db, query, limit):
