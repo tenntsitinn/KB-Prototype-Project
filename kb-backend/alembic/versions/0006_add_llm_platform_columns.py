@@ -1,7 +1,7 @@
 """Add llm_base_url and llm_model columns to users for multi-platform BYOK.
 
 Revision ID: 0006
-Revises: 0005
+Revises: 0003
 Create Date: 2026-08-24
 
 """
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 revision: str = "0006"
-down_revision: Union[str, None] = "0005"
+down_revision: Union[str, None] = "0003"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

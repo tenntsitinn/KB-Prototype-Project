@@ -64,5 +64,5 @@ EXPOSE ${UVICORN_PORT}
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import httpx; httpx.get('http://localhost:8000/health')" || exit 1
 
-# 默认启动：先执行数据库迁移，再启动 API 服务；Worker 启动时覆盖 CMD
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${UVICORN_PORT:-8000} --workers ${UVICORN_WORKERS:-4}"]
+# 数据库迁移由部署流程中的一次性 migrate 服务负责。
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${UVICORN_PORT:-8000} --workers ${UVICORN_WORKERS:-4}"]

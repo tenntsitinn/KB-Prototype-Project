@@ -15,9 +15,7 @@ from app.api.tags import router as tags_router
 from app.api.quiz import router as quiz_router
 from app.api.education import router as education_router
 from app.core.database import AsyncSessionLocal
-from app.services.user_service import seed_roles, seed_users, cleanup_unknown_permissions
 from app.services.rag import faq_service
-from app.services.tag_service import seed_tags
 
 # 最大请求体 = 100MB 文件 + multipart 开销（DOCX 超过 50MB 会在 worker 中流式自动拆分）
 MAX_REQUEST_BODY = 120 * 1024 * 1024  # 120MB
@@ -37,19 +35,7 @@ class MaxBodySizeMiddleware(BaseHTTPMiddleware):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with AsyncSessionLocal() as db:
-        await seed_roles(db)
-        await seed_users(db)
-        try:
-            await cleanup_unknown_permissions(db)
-        except Exception:
-            pass
         await faq_service.sync_faq_cache(db)
-        try:
-            await seed_tags(db)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(f"标签种子初始化失败（不影响启动，请确认已执行 init_db.sql）: {e}")
-            await db.rollback()
     yield
 
 

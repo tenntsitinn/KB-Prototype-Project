@@ -130,15 +130,15 @@ async def seed_roles(db: AsyncSession) -> None:
     await db.commit()
 
 
-async def seed_users(db: AsyncSession) -> None:
-    """初始化默认超级管理员账号，确保其拥有 super_admin 角色"""
+async def seed_users(db: AsyncSession, initial_password: str) -> None:
+    """按显式提供的密码初始化超级管理员，并确保其拥有 super_admin 角色。"""
     result = await db.execute(select(User).where(User.username == "admin"))
     user = result.scalar_one_or_none()
 
     if user is None:
         user = User(
             username="admin",
-            password_hash=hash_password("admin123"),
+            password_hash=hash_password(initial_password),
             display_name="超级管理员",
             email="admin@kb.local",
             is_superuser=True,
