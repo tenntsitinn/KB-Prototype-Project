@@ -14,6 +14,7 @@ from app.api.dashboard import router as dashboard_router
 from app.api.tags import router as tags_router
 from app.api.quiz import router as quiz_router
 from app.api.education import router as education_router
+from app.api.system import router as system_router
 from app.core.database import AsyncSessionLocal
 from app.services.rag import faq_service
 
@@ -53,6 +54,7 @@ app.include_router(dashboard_router)
 app.include_router(tags_router)
 app.include_router(quiz_router)
 app.include_router(education_router)
+app.include_router(system_router)
 
 
 @app.get("/health")

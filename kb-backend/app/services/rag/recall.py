@@ -36,7 +36,7 @@ async def do_recall(state: RAGState) -> dict:
     query = state["rewritten_query"]
     top_k = state.get("top_k", settings.RAG_TOP_K)
     from app.core.llm_config import resolve_user_llm_config
-    user_api_key, user_base_url, user_model = resolve_user_llm_config(user)
+    user_api_key, user_base_url, user_model = await resolve_user_llm_config(db, user)
 
     scope_unit_ids = await _resolve_scope_unit_ids(state)
 

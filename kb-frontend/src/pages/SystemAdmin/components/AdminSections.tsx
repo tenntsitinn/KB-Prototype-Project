@@ -550,3 +550,153 @@ if (typeof document !== 'undefined') {
   }
 }
 
+interface SystemLLMConfigInfo {
+  has_key: boolean
+  masked_key: string
+  source: string
+  base_url: string
+  model: string
+}
+
+interface Platform {
+  code: string
+  name: string
+  base_url: string
+  default_model: string
+}
+
+export function SystemLLMConfig({ showToast }: { showToast: (m: string, t: string) => void }) {
+  const [info, setInfo] = useState<SystemLLMConfigInfo | null>(null)
+  const [platforms, setPlatforms] = useState<Platform[]>([])
+  const [selectedPlatform, setSelectedPlatform] = useState('')
+  const [apiKeyInput, setApiKeyInput] = useState('')
+  const [modelInput, setModelInput] = useState('')
+  const [showForm, setShowForm] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  async function fetchInfo() {
+    try {
+      const res = await api.get('/api/system/llm-config')
+      setInfo(res.data)
+    } catch { showToast('加载全局配置失败', 'error') }
+  }
+
+  useEffect(() => {
+    fetchInfo()
+    api.get('/api/auth/llm-platforms').then(res => {
+      setPlatforms(res.data?.platforms || [])
+    }).catch(() => {})
+  }, [])
+
+  const selectedPlatformInfo = platforms.find(p => p.base_url === selectedPlatform)
+
+  function handlePlatformChange(baseUrl: string) {
+    setSelectedPlatform(baseUrl)
+    const p = platforms.find(x => x.base_url === baseUrl)
+    if (p) setModelInput(p.default_model)
+  }
+
+  function platformName(baseUrl: string): string {
+    if (!baseUrl) return ''
+    const p = platforms.find(x => x.base_url === baseUrl)
+    return p ? p.name : baseUrl
+  }
+
+  async function handleSave() {
+    if (!apiKeyInput.trim()) { showToast('请输入 API Key', 'error'); return }
+    if (!selectedPlatform) { showToast('请选择 API Key 所属平台', 'error'); return }
+    setSaving(true)
+    try {
+      const res = await api.put('/api/system/llm-config', {
+        api_key: apiKeyInput.trim(),
+        base_url: selectedPlatform,
+        model: modelInput.trim() || selectedPlatformInfo?.default_model || '',
+      })
+      setInfo(res.data)
+      setApiKeyInput('')
+      setModelInput('')
+      setShowForm(false)
+      showToast('全局 API Key 保存成功', 'success')
+    } catch (e: any) {
+      showToast(e?.response?.data?.detail || '保存失败', 'error')
+    } finally { setSaving(false) }
+  }
+
+  async function handleClear() {
+    if (!confirm('确定清除页面配置的全局密钥？清除后将回退到环境变量默认（如有）。')) return
+    setSaving(true)
+    try {
+      const res = await api.put('/api/system/llm-config', { api_key: '', base_url: '', model: '' })
+      setInfo(res.data)
+      showToast('已清除，回退环境变量默认', 'success')
+    } catch (e: any) {
+      showToast(e?.response?.data?.detail || '清除失败', 'error')
+    } finally { setSaving(false) }
+  }
+
+  const statusLine = (() => {
+    if (!info) return '加载中...'
+    if (info.source === 'db') {
+      return `已配置全局密钥 ${platformName(info.base_url)}（${info.masked_key}）${info.model ? `，模型：${info.model}` : ''}`
+    }
+    if (info.source === 'env') {
+      return '使用环境变量默认密钥（未在页面配置），可在此覆盖'
+    }
+    return '未配置全局密钥（环境变量也未设置）'
+  })()
+
+  const statusColor = info?.source === 'db' ? 'var(--success, #52c41a)'
+    : info?.source === 'env' ? 'var(--primary)'
+    : 'var(--warning, #faad14)'
+
+  return (
+    <div>
+      <div style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: 20, maxWidth: 640 }}>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>全局 API Key</div>
+          <div style={{ fontSize: 13, color: statusColor, lineHeight: 1.8 }}>{statusLine}</div>
+        </div>
+
+        {showForm ? (
+          <>
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: 'var(--text-secondary)', marginBottom: 6 }}>选择平台</label>
+              <select className="form-input" value={selectedPlatform} onChange={e => handlePlatformChange(e.target.value)}>
+                <option value="">请选择 API Key 所属平台</option>
+                {platforms.map(p => (
+                  <option key={p.code} value={p.base_url}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: 'var(--text-secondary)', marginBottom: 6 }}>输入 API Key</label>
+              <input className="form-input" type="password" value={apiKeyInput} onChange={e => setApiKeyInput(e.target.value)} placeholder="请输入该平台的 API Key" autoFocus />
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: 'var(--text-secondary)', marginBottom: 6 }}>模型名称</label>
+              <input className="form-input" type="text" value={modelInput} onChange={e => setModelInput(e.target.value)} placeholder={selectedPlatformInfo ? `留空使用平台默认（${selectedPlatformInfo.default_model}）` : '请先选择平台'} disabled={!selectedPlatform} />
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? '保存中...' : '保存'}</button>
+              <button className="btn btn-outline" onClick={() => { setShowForm(false); setApiKeyInput(''); setModelInput('') }}>取消</button>
+            </div>
+          </>
+        ) : (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-outline" onClick={() => setShowForm(true)}>
+              {info?.source === 'db' ? '更换配置' : '配置全局 Key'}
+            </button>
+            {info?.source === 'db' && (
+              <button className="btn btn-outline" onClick={handleClear} disabled={saving} style={{ color: 'var(--danger, #ff4d4f)' }}>清除</button>
+            )}
+          </div>
+        )}
+
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 12, lineHeight: 1.8 }}>
+          全局密钥用于：超级管理员的智能问答与出题、未配置个人 Key 用户上传文档的知识点提取兜底、FAQ 自动沉淀等系统级调用。用户配置的个人 Key 始终优先于全局密钥。
+        </div>
+      </div>
+    </div>
+  )
+}
+

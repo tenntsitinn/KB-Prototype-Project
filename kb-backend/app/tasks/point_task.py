@@ -26,12 +26,14 @@ def _run_async(coro):
 
 
 async def _resolve_llm_config(unit_id: str) -> tuple[str, str, str]:
-    """优先使用上传者的 LLM 配置，回退全局配置"""
+    """优先使用上传者的 LLM 配置，回退全局配置（数据库优先，环境变量兜底）"""
     from app.core.database import AsyncSessionLocal
+    from app.core.llm_config import resolve_system_llm_config
     from app.models.knowledge_unit import KnowledgeUnit
     from app.models.user import User
 
     async with AsyncSessionLocal() as db:
+        sys_api_key, sys_base_url, sys_model = await resolve_system_llm_config(db)
         unit = await db.get(KnowledgeUnit, unit_id)
         creator_id = unit.creator_id if unit else ""
         creator = await db.get(User, creator_id) if creator_id else None
@@ -40,11 +42,11 @@ async def _resolve_llm_config(unit_id: str) -> tuple[str, str, str]:
 
     raw_key = (creator.llm_api_key if creator else "") or ""
     api_key = decrypt_value(raw_key) if raw_key else ""
-    if not api_key:
-        api_key = settings.LLM_API_KEY
-    base_url = (creator.llm_base_url if creator else "") or settings.LLM_BASE_URL
-    model = (creator.llm_model if creator else "") or settings.LLM_MODEL
-    return api_key, base_url, model
+    return (
+        api_key or sys_api_key,
+        (creator.llm_base_url if creator else "") or sys_base_url,
+        (creator.llm_model if creator else "") or sys_model,
+    )
 
 
 async def _mark_failed(unit_id: str, error: str) -> None:

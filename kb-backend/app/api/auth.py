@@ -132,14 +132,22 @@ async def get_llm_platforms():
 
 
 @router.get("/api-key", response_model=ApiKeyResponse)
-async def get_api_key(user: User = Depends(get_current_user)):
+async def get_api_key(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """获取当前用户的 API key 状态（脱敏显示）"""
     from app.core.security import decrypt_value
 
     if user.is_superuser:
+        from app.core.llm_config import resolve_system_llm_config
+        sys_key, sys_base_url, sys_model = await resolve_system_llm_config(db)
+        masked = sys_key[:4] + "****" + sys_key[-4:] if len(sys_key) > 8 else ("****" if sys_key else "")
         return ApiKeyResponse(
-            has_key=True, masked_key="使用系统默认密钥", is_superuser=True,
-            base_url=settings.LLM_BASE_URL, model=settings.LLM_MODEL,
+            has_key=bool(sys_key),
+            masked_key=masked or "使用系统默认密钥",
+            is_superuser=True,
+            base_url=sys_base_url, model=sys_model,
         )
     key = decrypt_value(user.llm_api_key) if user.llm_api_key else ""
     if key:

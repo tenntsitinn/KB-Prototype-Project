@@ -405,7 +405,7 @@ async def next_question(
     否则按 category 标签出题。
     """
     from app.core.llm_config import resolve_user_llm_config
-    user_api_key, user_base_url, user_model = resolve_user_llm_config(user)
+    user_api_key, user_base_url, user_model = await resolve_user_llm_config(db, user)
     point_ids = [p for p in (point_ids or []) if p]
 
     # 1) 题库命中（已发布 + 排除本会话已出）
@@ -556,7 +556,7 @@ async def grade_and_record(
 ) -> dict | None:
     """判分入口：优先题库参考答案；生成题用判分时返回的参考答案兜底"""
     from app.core.llm_config import resolve_user_llm_config
-    user_api_key, user_base_url, user_model = resolve_user_llm_config(user)
+    user_api_key, user_base_url, user_model = await resolve_user_llm_config(db, user)
     q_result = await db.execute(select(QuizQuestion).where(QuizQuestion.id == question_id))
     q = q_result.scalars().first()
     if not q:

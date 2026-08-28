@@ -16,11 +16,11 @@ async def do_rewrite_query(state: RAGState) -> dict:
     user_api_key = ""
     user_base_url = ""
     user_model = ""
-    if user and not user.is_superuser:
-        from app.core.llm_config import resolve_user_llm_config
-        user_api_key, user_base_url, user_model = resolve_user_llm_config(user)
 
     try:
+        if user and state.get("db"):
+            from app.core.llm_config import resolve_user_llm_config
+            user_api_key, user_base_url, user_model = await resolve_user_llm_config(state["db"], user)
         client = _get_llm_client(user_api_key, user_base_url)
         resp = await client.chat.completions.create(
             model=user_model or settings.LLM_MODEL,

@@ -46,7 +46,7 @@ class RagService:
         t_start = time.time()
         session_id = session_id or uuid.uuid4().hex[:16]
         from app.core.llm_config import resolve_user_llm_config
-        user_api_key, user_base_url, user_model = resolve_user_llm_config(user)
+        user_api_key, user_base_url, user_model = await resolve_user_llm_config(db, user)
 
         state: RAGState = {
             "question": question, "user": user, "db": db,

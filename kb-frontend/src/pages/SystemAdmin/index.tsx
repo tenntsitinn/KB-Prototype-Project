@@ -1,7 +1,9 @@
 import { useState } from 'react'
-import { DeptManagement, RoleManagement, TagManagement, UserManagement } from './components/AdminSections'
+import { DeptManagement, RoleManagement, SystemLLMConfig, TagManagement, UserManagement } from './components/AdminSections'
+import { useAuthStore } from '../../stores/authStore'
 
 export default function SystemAdmin() {
+  const { user } = useAuthStore()
   const [activeTab, setActiveTab] = useState('users')
   const [toast, setToast] = useState({ msg: '', type: '' })
 
@@ -15,6 +17,7 @@ export default function SystemAdmin() {
     { key: 'roles', label: '角色管理' },
     { key: 'departments', label: '部门管理' },
     { key: 'tags', label: '标签管理' },
+    ...(user?.is_superuser ? [{ key: 'llm', label: '全局 API Key' }] : []),
   ]
 
   const tabBarStyle: React.CSSProperties = {
@@ -43,6 +46,7 @@ export default function SystemAdmin() {
       {activeTab === 'roles' && <RoleManagement showToast={showToast} />}
       {activeTab === 'departments' && <DeptManagement showToast={showToast} />}
       {activeTab === 'tags' && <TagManagement showToast={showToast} />}
+      {activeTab === 'llm' && <SystemLLMConfig showToast={showToast} />}
 
       {toast.msg && <div className={`toast ${toast.type}`}>{toast.msg}</div>}
     </div>

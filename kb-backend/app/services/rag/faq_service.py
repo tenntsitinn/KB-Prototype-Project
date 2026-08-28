@@ -69,12 +69,14 @@ FAQ答案："""
 
 async def _generate_faq_answer(question: str, context: str) -> str:
     try:
+        from app.core.llm_config import resolve_system_llm_config_standalone
+        api_key, base_url, model = await resolve_system_llm_config_standalone()
         client = AsyncOpenAI(
-            api_key=settings.LLM_API_KEY or settings.EMBEDDING_API_KEY,
-            base_url=settings.LLM_BASE_URL or settings.EMBEDDING_BASE_URL,
+            api_key=api_key or settings.EMBEDDING_API_KEY,
+            base_url=base_url or settings.EMBEDDING_BASE_URL,
         )
         resp = await client.chat.completions.create(
-            model=settings.LLM_MODEL,
+            model=model or settings.LLM_MODEL,
             messages=[{
                 "role": "user",
                 "content": FAQ_ANSWER_PROMPT.format(question=question, context=context),

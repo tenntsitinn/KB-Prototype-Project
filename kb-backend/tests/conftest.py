@@ -9,6 +9,7 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.models.knowledge_unit import Base
+import app.models  # noqa: F401  # 注册全部模型，确保 Base.metadata.create_all 覆盖所有表
 from tests.fakes import FakeEmbedding, FakeLLM, FakeMilvus, FakeMinIO, FakeRerank
 
 
