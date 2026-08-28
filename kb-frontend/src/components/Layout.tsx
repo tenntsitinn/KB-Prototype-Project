@@ -14,7 +14,7 @@ const navItems = [
   {
     section: '知识沉淀',
     items: [
-      { to: '/quiz-browse', label: '题库浏览', icon: 'browse', perm: 'quiz:manage' },
+      { to: '/overview', label: '知识总览', icon: 'browse', perm: 'quiz:manage' },
       { to: '/quiz-bank', label: '题库管理', icon: 'quizbank', perm: 'quiz:manage' },
       { to: '/points-review', label: '知识点管理', icon: 'points', perm: 'knowledge:manage' },
       { to: '/gaps', label: '缺口分析', icon: 'gaps', perm: 'gap:manage' },

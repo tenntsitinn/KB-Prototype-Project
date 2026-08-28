@@ -16,7 +16,7 @@ from app.models.knowledge_unit import (
 )
 from app.models.education import KnowledgePoint, MasteryRecord
 from app.models.user import User
-from app.prompts.quiz_prompts import QUIZ_GENERATE_PROMPT, QUIZ_GRADE_PROMPT
+from app.prompts.quiz_prompts import QUIZ_GENERATE_PROMPT, QUIZ_POINT_GENERATE_PROMPT, QUIZ_GRADE_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -103,12 +103,47 @@ async def _recall_context(
     return []
 
 
-async def _generate_question(context: str, asked_questions: list[str], knowledge_points: list[dict] | None = None, user_api_key: str = "", user_base_url: str = "", user_model: str = "") -> dict | None:
+async def _recall_point_context(db: AsyncSession, point_ids: list[str], top_k: int = 3) -> list[dict]:
+    """按指定知识点取出题素材：知识点内容本身即上下文。
+
+    返回结构与 _recall_context 一致（unit_id/unit_code/chunk_text/knowledge_points），
+    仅取 confirmed / pending_review 状态的知识点。
+    """
+    rows = await db.execute(
+        select(
+            KnowledgePoint.id, KnowledgePoint.title, KnowledgePoint.content,
+            KnowledgePoint.summary, KnowledgePoint.unit_id, KnowledgeUnit.unit_code,
+        )
+        .join(KnowledgeUnit, KnowledgeUnit.id == KnowledgePoint.unit_id)
+        .where(KnowledgePoint.id.in_(point_ids))
+        .where(KnowledgePoint.status.in_(("confirmed", "pending_review")))
+    )
+    points = [r for r in rows.all() if (r[2] or r[3] or "").strip()]
+    if not points:
+        return []
+
+    random.shuffle(points)
+    picked = points[:top_k]
+    context = "\n\n---\n\n".join(
+        f"【{r[1]}】\n{r[2] or r[3]}" for r in picked
+    )
+    kps = [{"id": r[0], "title": r[1]} for r in picked]
+    return [{
+        "unit_id": picked[0][4],
+        "unit_code": picked[0][5],
+        "chunk_text": context,
+        "score": 0.0,
+        "knowledge_points": kps,
+    }]
+
+
+async def _generate_question(context: str, asked_questions: list[str], knowledge_points: list[dict] | None = None, user_api_key: str = "", user_base_url: str = "", user_model: str = "", point_mode: bool = False) -> dict | None:
     """调用 LLM 生成一道题，返回 {question, reference_answer, evidence, knowledge_points}"""
     client = _get_llm_client(user_api_key, user_base_url)
     asked_text = "\n".join(f"{i+1}. {q}" for i, q in enumerate(asked_questions[-15:])) or "（暂无）"
     kp_text = "\n".join(f"- {kp['title']}" for kp in (knowledge_points or [])) or "（无）"
-    prompt = QUIZ_GENERATE_PROMPT.format(asked_questions=asked_text, context=context, knowledge_points=kp_text)
+    template = QUIZ_POINT_GENERATE_PROMPT if point_mode else QUIZ_GENERATE_PROMPT
+    prompt = template.format(asked_questions=asked_text, context=context, knowledge_points=kp_text)
     try:
         resp = await client.chat.completions.create(
             model=user_model or settings.LLM_MODEL,
@@ -360,15 +395,18 @@ async def auto_tag_question(
 async def next_question(
     db: AsyncSession, user: User, category: str, asked_question_ids: list[str],
     source_unit_id: str = "", source_unit_ids: list[str] | None = None,
+    point_ids: list[str] | None = None,
 ) -> dict | None:
     """出题入口：题库优先，未命中实时生成并落候选。
 
+    point_ids 非空时按指定知识点出题（题库命中按知识点关联筛选，生成以知识点内容为素材）。
     source_unit_ids 非空时按指定文档集合出题（树形勾选模式）。
     source_unit_id 非空时按单个文档出题（兼容旧模式）。
     否则按 category 标签出题。
     """
     from app.core.llm_config import resolve_user_llm_config
     user_api_key, user_base_url, user_model = resolve_user_llm_config(user)
+    point_ids = [p for p in (point_ids or []) if p]
 
     # 1) 题库命中（已发布 + 排除本会话已出）
     bank_stmt = (
@@ -378,11 +416,18 @@ async def next_question(
             QuizQuestion.source_unit_id != "",
         )
     )
+    if point_ids:
+        bank_stmt = bank_stmt.where(
+            QuizQuestion.id.in_(
+                select(QuizQuestionPoint.question_id)
+                .where(QuizQuestionPoint.point_id.in_(point_ids))
+            )
+        )
     if source_unit_ids:
         bank_stmt = bank_stmt.where(QuizQuestion.source_unit_id.in_(source_unit_ids))
     elif source_unit_id:
         bank_stmt = bank_stmt.where(QuizQuestion.source_unit_id == source_unit_id)
-    elif category:
+    elif category and not point_ids:
         bank_stmt = bank_stmt.where(QuizQuestion.category == category)
     if asked_question_ids:
         bank_stmt = bank_stmt.where(~QuizQuestion.id.in_(asked_question_ids))
@@ -406,11 +451,14 @@ async def next_question(
         }
 
     # 2) 实时生成
-    chunks = await _recall_context(
-        db, category, user,
-        source_unit_id=source_unit_id,
-        source_unit_ids=source_unit_ids,
-    )
+    if point_ids:
+        chunks = await _recall_point_context(db, point_ids)
+    else:
+        chunks = await _recall_context(
+            db, category, user,
+            source_unit_id=source_unit_id,
+            source_unit_ids=source_unit_ids,
+        )
     if not chunks:
         return None
 
@@ -423,7 +471,10 @@ async def next_question(
         )
         asked_texts = [row[0] for row in prev.all()]
 
-    generated = await _generate_question(context, asked_texts, kps, user_api_key, user_base_url, user_model)
+    generated = await _generate_question(
+        context, asked_texts, kps, user_api_key, user_base_url, user_model,
+        point_mode=bool(point_ids),
+    )
     if not generated:
         return None
 
@@ -433,11 +484,17 @@ async def next_question(
     unit = unit_row.scalars().first()
     unit_category = unit.category if unit else (category or "")
 
-    # 去重检查：命中则复用已有题，不再新落库
+    # 去重检查：命中则复用已有题，不再新落库（知识点模式下按所选知识点的来源文档限定范围）
+    dedup_unit_ids = source_unit_ids
+    if point_ids and not dedup_unit_ids:
+        unit_rows = await db.execute(
+            select(KnowledgePoint.unit_id).where(KnowledgePoint.id.in_(point_ids))
+        )
+        dedup_unit_ids = list({r[0] for r in unit_rows.all()})
     dup = await _find_duplicate_question(
         db, new_question,
         source_unit_id=source_unit_id,
-        source_unit_ids=source_unit_ids,
+        source_unit_ids=dedup_unit_ids,
         category=unit_category,
     )
     if dup:

@@ -26,6 +26,7 @@ export default function Quiz() {
   const [tags, setTags] = useState<Tag[]>([])
   const [documents, setDocuments] = useState<DocumentItem[]>([])
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [selectedPointIds, setSelectedPointIds] = useState<Set<string>>(new Set())
 
   const [loading, setLoading] = useState(false)
   const [current, setCurrent] = useState<QuizQuestion | null>(null)
@@ -62,12 +63,12 @@ export default function Quiz() {
   }, [documents.length])
 
   const startQuiz = useCallback(() => {
-    if (selectedIds.size === 0) return
+    if (selectedIds.size === 0 && selectedPointIds.size === 0) return
     setAskedIds([])
     setHistory([])
     setPhase('question')
     fetchNext([])
-  }, [selectedIds])
+  }, [selectedIds, selectedPointIds])
 
   const openSource = useCallback(async (unitId: string) => {
     const win = window.open('about:blank', '_blank')
@@ -92,6 +93,7 @@ export default function Quiz() {
       const payload: Record<string, any> = {
         asked_question_ids: asked,
         source_unit_ids: Array.from(selectedIds),
+        point_ids: Array.from(selectedPointIds),
       }
       const res = await api.post('/api/quiz/next', payload)
       setCurrent(res.data)
@@ -101,7 +103,7 @@ export default function Quiz() {
     } finally {
       setLoading(false)
     }
-  }, [selectedIds])
+  }, [selectedIds, selectedPointIds])
 
   const submitAnswer = useCallback(async () => {
     if (!current) return
@@ -174,7 +176,7 @@ export default function Quiz() {
                   borderRadius: 8, boxShadow: 'var(--shadow)', overflow: 'hidden',
                 }}>
                   <div
-                    onClick={() => { setSelectedCourse(''); setSelectedIds(new Set()); setCourseOpen(false) }}
+                    onClick={() => { setSelectedCourse(''); setSelectedIds(new Set()); setSelectedPointIds(new Set()); setCourseOpen(false) }}
                     style={{
                       padding: '8px 14px', fontSize: 13, cursor: 'pointer',
                       background: !selectedCourse ? 'var(--primary-light, rgba(59,130,246,0.08))' : 'transparent',
@@ -190,7 +192,7 @@ export default function Quiz() {
                     return (
                       <div
                         key={c}
-                        onClick={() => { setSelectedCourse(c); setSelectedIds(new Set()); setCourseOpen(false) }}
+                        onClick={() => { setSelectedCourse(c); setSelectedIds(new Set()); setSelectedPointIds(new Set()); setCourseOpen(false) }}
                         style={{
                           padding: '8px 14px', fontSize: 13, cursor: 'pointer',
                           background: active ? 'var(--primary-light, rgba(59,130,246,0.08))' : 'transparent',
@@ -208,7 +210,7 @@ export default function Quiz() {
             </div>
           </div>
           <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: '0 0 20px', lineHeight: 1.6 }}>
-            选择出题范围，AI 基于章节中的知识点生成开放式问题。勾选章节即覆盖其下全部知识点。一题一卡，作答后即时评分并给出参考答案。
+            选择出题范围：勾选章节覆盖其全部知识点，勾选单个知识点则只针对所选知识点出题。一题一卡，作答后即时评分并给出参考答案。
           </p>
 
           <div style={{ marginBottom: 24 }}>
@@ -220,16 +222,20 @@ export default function Quiz() {
               documents={filteredDocuments}
               selectedIds={selectedIds}
               onChange={setSelectedIds}
+              selectedPointIds={selectedPointIds}
+              onPointIdsChange={setSelectedPointIds}
             />
           </div>
 
           <button
             className="btn btn-primary"
             style={{ width: '100%', justifyContent: 'center', padding: '12px 0', fontSize: 15 }}
-            disabled={selectedIds.size === 0}
+            disabled={selectedIds.size === 0 && selectedPointIds.size === 0}
             onClick={startQuiz}
           >
-            {selectedIds.size > 0 ? `开始答题（已选 ${selectedIds.size} 个章节）` : '请先选择出题范围'}
+            {selectedIds.size + selectedPointIds.size > 0
+              ? `开始答题（已选 ${selectedIds.size} 个章节${selectedPointIds.size > 0 ? ` · ${selectedPointIds.size} 个知识点` : ''}）`
+              : '请先选择出题范围'}
           </button>
           {history.length > 0 && (
             <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border-light)' }}>
@@ -256,7 +262,7 @@ export default function Quiz() {
         alignItems: 'center', marginBottom: 12, fontSize: 13, color: 'var(--text-muted)',
       }}>
         <span>
-          已答 {history.length} 题 · 已选 {selectedIds.size} 个章节
+          已答 {history.length} 题 · 已选 {selectedIds.size} 个章节{selectedPointIds.size > 0 ? ` · ${selectedPointIds.size} 个知识点` : ''}
         </span>
         <button className="btn btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }} onClick={exitQuiz}>
           退出本轮

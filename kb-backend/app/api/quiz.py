@@ -27,11 +27,11 @@ async def next_question(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """出一道题：题库命中优先，未命中实时生成。支持按标签或按文档出题。"""
+    """出一道题：题库命中优先，未命中实时生成。支持按知识点、按标签或按文档出题。"""
     try:
         result = await quiz_service.next_question(
             db, user, req.category, req.asked_question_ids,
-            req.source_unit_id, req.source_unit_ids,
+            req.source_unit_id, req.source_unit_ids, req.point_ids,
         )
     except InsufficientBalanceError:
         raise HTTPException(status_code=402, detail="402 Insufficient Balance : 余额不足")

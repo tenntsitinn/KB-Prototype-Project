@@ -292,3 +292,95 @@ async def test_merge_duplicates_missing_keep_id(db_session, no_faq_cache):
     result = await merge_duplicates(db_session, "no-such-id", ["dup-x"])
 
     assert result == {"merged": 0, "error": "keep_id 不存在"}
+
+
+# --- 按知识点出题 ---
+
+
+@pytest.mark.asyncio
+async def test_next_question_point_mode_bank_hit_filters_by_point(db_session, superuser):
+    db_session.add(KnowledgeUnit(id="u-pt", title="Point Unit", status="published"))
+    tagged = _published_question(db_session, "关联知识点的题目？", unit_id="u-pt")
+    other = _published_question(db_session, "未关联的题目？", unit_id="u-pt")
+    await db_session.commit()
+    db_session.add(QuizQuestionPoint(question_id=tagged.id, point_id="kp-target"))
+    await db_session.commit()
+
+    result = await next_question(
+        db_session, superuser, category="", asked_question_ids=[],
+        point_ids=["kp-target"],
+    )
+
+    assert result is not None
+    assert result["from_bank"] is True
+    assert result["question_id"] == tagged.id
+    assert result["question_id"] != other.id
+
+
+@pytest.mark.asyncio
+async def test_next_question_point_mode_generates_from_point_content(db_session, superuser, monkeypatch, no_faq_cache):
+    db_session.add(KnowledgeUnit(id="u-point", title="Point Unit", status="published", category="pt-cat"))
+    db_session.add(KnowledgePoint(
+        id="kp-point", unit_id="u-point", title="LangGraph 状态机",
+        summary="状态机摘要", content="LangGraph 通过 StateGraph 管理状态流转", status="confirmed",
+    ))
+    await db_session.commit()
+
+    captured: dict = {}
+
+    async def fake_generate(context, asked, kps, *args, **kwargs):
+        captured["context"] = context
+        captured["kps"] = kps
+        captured["point_mode"] = kwargs.get("point_mode")
+        return {
+            "question": "LangGraph 中 StateGraph 的作用是什么？",
+            "reference_answer": "管理状态流转",
+            "evidence": "StateGraph 管理状态流转",
+            "knowledge_points": ["LangGraph 状态机"],
+        }
+
+    async def no_dup(db, question_text, *args, **kwargs):
+        return None
+
+    monkeypatch.setattr(quiz_service, "_generate_question", fake_generate)
+    monkeypatch.setattr(quiz_service, "_find_duplicate_question", no_dup)
+
+    result = await next_question(
+        db_session, superuser, category="", asked_question_ids=[],
+        point_ids=["kp-point"],
+    )
+
+    assert result is not None
+    assert result["from_bank"] is False
+    assert result["source_unit_id"] == "u-point"
+    # 上下文来自知识点内容本身
+    assert "LangGraph 状态机" in captured["context"]
+    assert "StateGraph 管理状态流转" in captured["context"]
+    assert captured["point_mode"] is True
+    # 生成题按 LLM 返回的知识点标题建立关联
+    links = (await db_session.execute(
+        select(QuizQuestionPoint).where(QuizQuestionPoint.question_id == result["question_id"])
+    )).scalars().all()
+    assert [l.point_id for l in links] == ["kp-point"]
+
+
+@pytest.mark.asyncio
+async def test_next_question_point_mode_rejects_invalid_points(db_session, superuser, monkeypatch):
+    db_session.add(KnowledgeUnit(id="u-rej", title="Rej Unit", status="published"))
+    db_session.add(KnowledgePoint(
+        id="kp-rej", unit_id="u-rej", title="已拒绝知识点",
+        content="内容", status="rejected",
+    ))
+    await db_session.commit()
+
+    async def fail_generate(*args, **kwargs):
+        raise AssertionError("不应触发生成")
+
+    monkeypatch.setattr(quiz_service, "_generate_question", fail_generate)
+
+    result = await next_question(
+        db_session, superuser, category="", asked_question_ids=[],
+        point_ids=["kp-rej", "kp-missing"],
+    )
+
+    assert result is None

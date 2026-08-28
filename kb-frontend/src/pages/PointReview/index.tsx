@@ -13,7 +13,11 @@ interface PointItem {
   source_units: { unit_id: string; title: string }[]
 }
 
-type TabKey = 'pending_review' | 'delete_pending'
+interface SourceOption {
+  unit_id: string
+  title: string
+  count: number
+}
 
 const PAGE_SIZE = 10
 
@@ -31,16 +35,25 @@ const labelStyle: React.CSSProperties = {
   fontSize: 12, color: 'var(--text-muted)', marginBottom: 6,
 }
 
+const selectStyle: React.CSSProperties = {
+  padding: '8px 12px', fontSize: 13, borderRadius: 8, border: '1px solid var(--border)',
+  background: 'var(--bg-card)', color: 'var(--text)', cursor: 'pointer', fontFamily: 'var(--font)',
+}
+
 const chipStyle = (color: string): React.CSSProperties => ({
   fontSize: 11, padding: '2px 8px', borderRadius: 999,
   background: `${color}1a`, color, fontWeight: 500,
 })
 
 export default function PointReview() {
-  const [tab, setTab] = useState<TabKey>('pending_review')
   const [items, setItems] = useState<PointItem[]>([])
   const [total, setTotal] = useState(0)
   const [counts, setCounts] = useState({ pending_review: 0, delete_pending: 0 })
+  const [sourceOptions, setSourceOptions] = useState<SourceOption[]>([])
+  const [statusFilter, setStatusFilter] = useState('')
+  const [sourceFilter, setSourceFilter] = useState('')
+  const [keyword, setKeyword] = useState('')
+  const [searchInput, setSearchInput] = useState('')
   const [page, setPage] = useState(0)
   const [loading, setLoading] = useState(false)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -72,30 +85,30 @@ export default function PointReview() {
     setLoading(true)
     try {
       const res = await api.get('/api/education/points', {
-        params: { status: tab, offset: page * PAGE_SIZE, limit: PAGE_SIZE },
+        params: {
+          status: statusFilter, unit_id: sourceFilter, keyword,
+          offset: page * PAGE_SIZE, limit: PAGE_SIZE,
+        },
       })
       setItems(res.data?.items || [])
       setTotal(res.data?.total || 0)
+      setSourceOptions(res.data?.source_options || [])
     } catch {
       setItems([])
       setTotal(0)
     } finally {
       setLoading(false)
     }
-  }, [tab, page])
+  }, [statusFilter, sourceFilter, keyword, page])
 
   useEffect(() => { fetchCounts() }, [fetchCounts])
   useEffect(() => { fetchList() }, [fetchList])
-  // 翻页/切换页签时清空勾选，避免跨页残留
-  useEffect(() => { setSelected(new Set()); setSelectAllMode(false) }, [page, tab])
-
-  const switchTab = (key: TabKey) => {
-    setTab(key)
-    setPage(0)
-    setExpanded(new Set())
+  // 筛选或翻页变化时清空勾选与展开，避免跨页残留
+  useEffect(() => {
     setSelected(new Set())
     setSelectAllMode(false)
-  }
+    setExpanded(new Set())
+  }, [page, statusFilter, sourceFilter, keyword])
 
   const refreshAll = () => {
     fetchList()
@@ -125,7 +138,8 @@ export default function PointReview() {
     })
   }
 
-  const allSelected = tab === 'pending_review' && items.length > 0 && items.every(p => selected.has(p.id))
+  const selectable = items.filter(p => p.status !== 'delete_pending')
+  const allSelected = selectable.length > 0 && selectable.every(p => selected.has(p.id))
 
   const toggleSelectAll = () => {
     if (selectAllMode) {
@@ -133,7 +147,7 @@ export default function PointReview() {
       setSelected(new Set())
       return
     }
-    setSelected(allSelected ? new Set() : new Set(items.map(p => p.id)))
+    setSelected(allSelected ? new Set() : new Set(selectable.map(p => p.id)))
   }
 
   const toggleSelectAllMode = () => {
@@ -251,35 +265,56 @@ export default function PointReview() {
     })
   }
 
-  const tabStyle = (active: boolean): React.CSSProperties => ({
-    padding: '8px 16px', fontSize: 13, cursor: 'pointer', borderRadius: 8,
-    background: active ? 'var(--primary-light)' : 'transparent',
-    color: active ? 'var(--primary)' : 'var(--text-muted)',
-    fontWeight: active ? 600 : 400, border: '1px solid var(--border)',
-  })
+  const description = statusFilter === 'delete_pending'
+    ? '删除文档时，融合了多个文档内容的知识点会进入此处。请确认保留（可编辑剔除已删文档的内容）或删除。'
+    : statusFilter === 'confirmed'
+      ? '已确认入库的知识点全集。可编辑修正内容，或拒绝错误知识点。'
+      : statusFilter === 'pending_review'
+        ? '文档拆分出的知识点在此确认。语义相近的已列出合并建议，可编辑后确认或直接并入已有知识点。'
+        : '默认列出全部知识点（待审核 / 已确认 / 删除待处理，已拒绝不展示）。新拆分的知识点在此确认，语义相近的已列出合并建议。'
 
   return (
     <div style={containerStyle}>
-      {/* Tab */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <div style={tabStyle(tab === 'pending_review')} onClick={() => switchTab('pending_review')}>
-            待审核 {counts.pending_review > 0 && <span style={{ fontSize: 11 }}>({counts.pending_review})</span>}
-          </div>
-          <div style={tabStyle(tab === 'delete_pending')} onClick={() => switchTab('delete_pending')}>
-            删除待处理 {counts.delete_pending > 0 && <span style={{ fontSize: 11 }}>({counts.delete_pending})</span>}
-          </div>
-        </div>
+      {/* Toolbar */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+        <input
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') setKeyword(searchInput.trim()) }}
+          placeholder="搜索知识点标题/内容，回车确认"
+          style={{
+            padding: '8px 12px', fontSize: 13, borderRadius: 8, border: '1px solid var(--border)',
+            background: 'var(--bg-card)', color: 'var(--text)', fontFamily: 'var(--font)', outline: 'none', width: 240,
+          }}
+        />
+        <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)} style={selectStyle}>
+          <option value="">全部来源章节</option>
+          {sourceOptions.map(s => (
+            <option key={s.unit_id} value={s.unit_id}>{s.title}（{s.count}）</option>
+          ))}
+        </select>
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={selectStyle}>
+          <option value="">全部审核状态</option>
+          <option value="pending_review">待审核{counts.pending_review > 0 ? ` (${counts.pending_review})` : ''}</option>
+          <option value="confirmed">已确认</option>
+          <option value="delete_pending">删除待处理{counts.delete_pending > 0 ? ` (${counts.delete_pending})` : ''}</option>
+        </select>
+        <div style={{ flex: 1 }} />
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>共 {total} 个知识点</span>
+        <button
+          className={statusFilter === 'delete_pending' ? 'btn btn-primary' : 'btn btn-outline'}
+          onClick={() => setStatusFilter(statusFilter === 'delete_pending' ? '' : 'delete_pending')}
+        >
+          删除待处理{counts.delete_pending > 0 ? ` (${counts.delete_pending})` : ''}
+        </button>
       </div>
 
       <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: '0 0 16px', lineHeight: 1.6 }}>
-        {tab === 'pending_review'
-          ? '文档拆分出的知识点在此确认。语义相近的已列出合并建议，可编辑后确认或直接并入已有知识点。'
-          : '删除文档时，融合了多个文档内容的知识点会进入此处。请确认保留（可编辑剔除已删文档的内容）或删除。'}
+        {description}
       </p>
 
-      {/* 批量操作栏（仅待审核） */}
-      {tab === 'pending_review' && items.length > 0 && (
+      {/* 批量操作栏（非删除待处理视图） */}
+      {statusFilter !== 'delete_pending' && items.length > 0 && (
         <div style={{
           display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, padding: '8px 14px',
           background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8,
@@ -293,7 +328,7 @@ export default function PointReview() {
             />
             全选本页
           </label>
-          {total > PAGE_SIZE && (
+          {statusFilter === 'pending_review' && !sourceFilter && !keyword && total > PAGE_SIZE && (
             <span
               onClick={toggleSelectAllMode}
               style={{ fontSize: 12, color: 'var(--primary)', cursor: 'pointer', userSelect: 'none' }}
@@ -328,7 +363,7 @@ export default function PointReview() {
         <div style={{ padding: 60, textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>加载中…</div>
       ) : items.length === 0 ? (
         <div style={{ padding: 60, textAlign: 'center', color: 'var(--text-muted)', fontSize: 14, ...cardStyle }}>
-          {tab === 'pending_review' ? '暂无待审核知识点' : '暂无删除待处理的知识点'}
+          暂无符合条件的知识点
         </div>
       ) : items.map(p => {
         const isDeletePending = p.status === 'delete_pending'
@@ -353,7 +388,9 @@ export default function PointReview() {
               </span>
               {isDeletePending
                 ? <span style={chipStyle('var(--warning, #d97706)')}>删除待处理</span>
-                : <span style={chipStyle('var(--primary)')}>待审核</span>}
+                : p.status === 'confirmed'
+                  ? <span style={chipStyle('var(--success, #16a34a)')}>已确认</span>
+                  : <span style={chipStyle('var(--primary)')}>待审核</span>}
             </div>
 
             {/* 归属与来源 */}
@@ -428,6 +465,14 @@ export default function PointReview() {
                     确认删除
                   </button>
                 </>
+              ) : p.status === 'confirmed' ? (
+                <button
+                  className="btn btn-danger" style={{ fontSize: 12, padding: '5px 14px' }}
+                  disabled={!!working}
+                  onClick={() => { if (window.confirm(`确认拒绝知识点「${p.title}」？拒绝后不再参与出题与检索。`)) review(p.id, 'reject') }}
+                >
+                  拒绝
+                </button>
               ) : (
                 <>
                   <button

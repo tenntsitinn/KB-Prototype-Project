@@ -10,7 +10,7 @@ const GapAnalysis = lazy(() => import('../pages/GapAnalysis'))
 const Dashboard = lazy(() => import('../pages/Dashboard'))
 const QuizBank = lazy(() => import('../pages/QuizBank'))
 const PointReview = lazy(() => import('../pages/PointReview'))
-const QuizBrowse = lazy(() => import('../pages/QuizBrowse'))
+const KnowledgeOverview = lazy(() => import('../pages/KnowledgeOverview'))
 const SystemAdmin = lazy(() => import('../pages/SystemAdmin'))
 const Settings = lazy(() => import('../pages/Settings'))
 
@@ -83,7 +83,7 @@ export default function AppRouter() {
       <Route path="/dashboard" element={<ProtectedRoute title="数据看板"><Dashboard /></ProtectedRoute>} />
       <Route path="/quiz-bank" element={<ProtectedRoute title="题库管理"><QuizBank /></ProtectedRoute>} />
       <Route path="/points-review" element={<ProtectedRoute title="知识点管理"><PointReview /></ProtectedRoute>} />
-      <Route path="/quiz-browse" element={<ProtectedRoute title="题库浏览"><QuizBrowse /></ProtectedRoute>} />
+      <Route path="/overview" element={<ProtectedRoute title="知识总览"><KnowledgeOverview /></ProtectedRoute>} />
       <Route path="/admin" element={<ProtectedRoute title="系统管理"><SystemAdmin /></ProtectedRoute>} />
       <Route path="/settings" element={<ProtectedRoute title="账号设置"><Settings /></ProtectedRoute>} />
       <Route path="*" element={<Navigate to="/qa" replace />} />

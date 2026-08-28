@@ -208,35 +208,73 @@ async def batch_unit_points(
 
 @router.get("/points")
 async def list_points(
-    status: str = "pending_review",
+    status: str = "",
+    unit_id: str = "",
+    keyword: str = "",
     offset: int = 0,
     limit: int = 10,
     db: AsyncSession = Depends(get_db),
 ):
-    """知识点审核队列：跨章节按状态列出（pending_review / delete_pending）"""
-    if status not in ("pending_review", "delete_pending"):
-        raise HTTPException(status_code=400, detail="status 必须是 pending_review 或 delete_pending")
+    """知识点管理列表：默认全量（排除已拒绝），可按审核状态 / 来源章节 / 关键词筛选"""
+    if status not in ("", "pending_review", "confirmed", "delete_pending"):
+        raise HTTPException(status_code=400, detail="status 必须是 pending_review / confirmed / delete_pending 或留空")
     limit = max(1, min(limit, 50))
 
+    conditions = ["kp.status != 'rejected'"]
+    params: dict = {"limit": limit, "offset": offset}
+    if status:
+        conditions[0] = "kp.status = :status"
+        params["status"] = status
+    if unit_id:
+        conditions.append("(kp.unit_id = :unit_id OR kp.source_refs_json LIKE :ref_like)")
+        params["unit_id"] = unit_id
+        params["ref_like"] = f"%{unit_id}%"
+    kw = keyword.strip()
+    if kw:
+        conditions.append("(kp.title LIKE :kw OR kp.content LIKE :kw)")
+        params["kw"] = f"%{kw}%"
+    where = " AND ".join(conditions)
+
     count_result = await db.execute(
-        text("SELECT COUNT(*) FROM knowledge_points WHERE status = :status"),
-        {"status": status},
+        text(f"SELECT COUNT(*) FROM knowledge_points kp WHERE {where}"),
+        params,
     )
     total = count_result.scalar() or 0
 
     result = await db.execute(
-        text("""
+        text(f"""
             SELECT kp.id, kp.unit_id, ku.title, kp.title, kp.summary, kp.content,
-                   kp.status, kp.candidate_merge_json, kp.source_refs_json
+                   kp.status, kp.candidate_merge_json, kp.source_refs_json,
+                   kp.created_at, COALESCE(qc.cnt, 0)
             FROM knowledge_points kp
             JOIN knowledge_units ku ON kp.unit_id = ku.id
-            WHERE kp.status = :status
+            LEFT JOIN (
+                SELECT qqp.point_id, COUNT(*) AS cnt
+                FROM quiz_question_points qqp
+                JOIN quiz_questions qq ON qq.id = qqp.question_id
+                WHERE qq.status = 'published'
+                GROUP BY qqp.point_id
+            ) qc ON qc.point_id = kp.id
+            WHERE {where}
             ORDER BY ku.created_at, kp.created_at
             LIMIT :limit OFFSET :offset
         """),
-        {"status": status, "limit": limit, "offset": offset},
+        params,
     )
     rows = result.all()
+
+    # 来源章节选项（独立于当前筛选，供下拉）
+    source_result = await db.execute(text("""
+        SELECT kp.unit_id, ku.title, COUNT(*)
+        FROM knowledge_points kp
+        JOIN knowledge_units ku ON ku.id = kp.unit_id
+        WHERE kp.status != 'rejected'
+        GROUP BY kp.unit_id, ku.title
+        ORDER BY ku.title
+    """))
+    source_options = [
+        {"unit_id": r[0], "title": r[1], "count": r[2]} for r in source_result.all()
+    ]
 
     # 解析 source_refs，批量补齐来源文档标题
     ref_unit_ids: set[str] = set()
@@ -257,8 +295,14 @@ async def list_points(
         )
         unit_titles = {t[0]: t[1] for t in title_result.all()}
 
+    def _fmt_time(v):
+        if v is None:
+            return ""
+        return v.isoformat() if hasattr(v, "isoformat") else str(v)
+
     return {
         "total": total,
+        "source_options": source_options,
         "items": [
             {
                 "id": r[0], "unit_id": r[1], "unit_title": r[2], "title": r[3],
@@ -268,6 +312,8 @@ async def list_points(
                     {"unit_id": x.get("unit_id"), "title": unit_titles.get(x.get("unit_id"), "未知文档")}
                     for x in parsed_refs[r[0]] if isinstance(x, dict) and x.get("unit_id")
                 ],
+                "created_at": _fmt_time(r[9]),
+                "question_count": r[10],
             }
             for r in rows
         ],

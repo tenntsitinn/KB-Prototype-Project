@@ -23,6 +23,8 @@ interface DocumentTreeSelectProps {
   documents: TreeDocument[]
   selectedIds: Set<string>
   onChange: (ids: Set<string>) => void
+  selectedPointIds?: Set<string>
+  onPointIdsChange?: (ids: Set<string>) => void
 }
 
 const POINTS_STATUS_TEXT: Record<string, string> = {
@@ -31,12 +33,13 @@ const POINTS_STATUS_TEXT: Record<string, string> = {
 }
 
 export default function DocumentTreeSelect({
-  documents, selectedIds, onChange,
+  documents, selectedIds, onChange, selectedPointIds, onPointIdsChange,
 }: DocumentTreeSelectProps) {
   const [query, setQuery] = useState('')
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [pointsMap, setPointsMap] = useState<Record<string, UnitPoints>>({})
   const [pointsLoaded, setPointsLoaded] = useState(false)
+  const pointSelectionEnabled = Boolean(selectedPointIds && onPointIdsChange)
 
   const unitIdsKey = useMemo(
     () => documents.map(d => d.id).join(','),
@@ -62,9 +65,11 @@ export default function DocumentTreeSelect({
   const filteredDocs = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return documents
-    return documents.filter(d => d.title.toLowerCase().includes(q))
-      .sort((a, b) => a.title.localeCompare(b.title))
-  }, [documents, query])
+    return documents.filter(d => {
+      if (d.title.toLowerCase().includes(q)) return true
+      return (pointsMap[d.id]?.points || []).some(p => p.title.toLowerCase().includes(q))
+    }).sort((a, b) => a.title.localeCompare(b.title))
+  }, [documents, query, pointsMap])
 
   const toggleCollapse = useCallback((id: string) => {
     setCollapsed(prev => {
@@ -82,13 +87,30 @@ export default function DocumentTreeSelect({
     onChange(next)
   }, [selectedIds, onChange])
 
+  const togglePoint = useCallback((pointId: string) => {
+    if (!selectedPointIds || !onPointIdsChange) return
+    const next = new Set(selectedPointIds)
+    if (next.has(pointId)) next.delete(pointId)
+    else next.add(pointId)
+    onPointIdsChange(next)
+  }, [selectedPointIds, onPointIdsChange])
+
+  const allPointIds = useMemo(
+    () => filteredDocs.flatMap(d => (pointsMap[d.id]?.points || []).map(p => p.id)),
+    [filteredDocs, pointsMap],
+  )
+
   const selectAll = useCallback(() => {
     onChange(new Set(filteredDocs.map(d => d.id)))
-  }, [filteredDocs, onChange])
+    if (selectedPointIds && onPointIdsChange && allPointIds.length > 0) {
+      onPointIdsChange(new Set(allPointIds))
+    }
+  }, [filteredDocs, onChange, selectedPointIds, onPointIdsChange, allPointIds])
 
   const clearAll = useCallback(() => {
     onChange(new Set())
-  }, [onChange])
+    if (selectedPointIds && onPointIdsChange) onPointIdsChange(new Set())
+  }, [onChange, selectedPointIds, onPointIdsChange])
 
   const allSelected = filteredDocs.length > 0 && filteredDocs.every(d => selectedIds.has(d.id))
 
@@ -138,23 +160,38 @@ export default function DocumentTreeSelect({
     }
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '2px 0' }}>
-        {points.map(p => (
-          <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{
-              width: 5, height: 5, borderRadius: '50%', flexShrink: 0,
-              background: p.status === 'pending_review' ? 'var(--warning, #d97706)' : 'var(--success, #16a34a)',
-            }} />
-            <span style={{
-              fontSize: 12, color: 'var(--text-secondary, var(--text))',
-              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-            }}>
-              {p.title}
-            </span>
-            {p.status === 'pending_review' && (
-              <span style={{ fontSize: 10, color: 'var(--warning, #d97706)', flexShrink: 0 }}>待审核</span>
-            )}
-          </div>
-        ))}
+        {points.map(p => {
+          const pointChecked = Boolean(selectedPointIds?.has(p.id))
+          return (
+            <div
+              key={p.id}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6, padding: pointSelectionEnabled ? '2px 0' : 0,
+                cursor: pointSelectionEnabled ? 'pointer' : 'default',
+              }}
+              onClick={pointSelectionEnabled ? () => togglePoint(p.id) : undefined}
+            >
+              {pointSelectionEnabled && (
+                <div style={checkboxStyle(pointChecked, false)} onClick={(e) => { e.stopPropagation(); togglePoint(p.id) }}>
+                  {pointChecked ? checkMark() : null}
+                </div>
+              )}
+              <span style={{
+                width: 5, height: 5, borderRadius: '50%', flexShrink: 0,
+                background: p.status === 'pending_review' ? 'var(--warning, #d97706)' : 'var(--success, #16a34a)',
+              }} />
+              <span style={{
+                fontSize: 12, color: 'var(--text-secondary, var(--text))',
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}>
+                {p.title}
+              </span>
+              {p.status === 'pending_review' && (
+                <span style={{ fontSize: 10, color: 'var(--warning, #d97706)', flexShrink: 0 }}>待审核</span>
+              )}
+            </div>
+          )
+        })}
       </div>
     )
   }
@@ -189,7 +226,9 @@ export default function DocumentTreeSelect({
           {allSelected ? checkMark() : selectedIds.size > 0 ? indeterminateMark() : null}
         </div>
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-          {selectedIds.size > 0 ? `已选 ${selectedIds.size} 个章节` : '全选章节'}
+          {selectedIds.size > 0 || (selectedPointIds?.size || 0) > 0
+            ? `已选 ${selectedIds.size} 个章节${pointSelectionEnabled && selectedPointIds ? ` · ${selectedPointIds.size} 个知识点` : ''}`
+            : '全选章节'}
         </span>
         {selectedIds.size > 0 && (
           <button onClick={clearAll} style={{
